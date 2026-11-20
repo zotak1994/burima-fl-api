@@ -19,14 +19,22 @@ const TEMPLATE_COLUMNS = [
     { 'header': 'shop', 'key': 'shop', 'width': 22 },
     { 'header': 'name', 'key': 'name', 'width': 36 },
     { 'header': 'category', 'key': 'category', 'width': 22 },
+    { 'header': 'company', 'key': 'company', 'width': 22 },
+    { 'header': 'motherCategory', 'key': 'motherCategory', 'width': 22 },
+    { 'header': 'capacity', 'key': 'capacity', 'width': 14 },
+    { 'header': 'mrp', 'key': 'mrp', 'width': 12 },
+    { 'header': 'purchasePrice', 'key': 'purchasePrice', 'width': 16 },
     { 'header': 'mainUnit', 'key': 'mainUnit', 'width': 12 },
     { 'header': 'alternateUnit', 'key': 'alternateUnit', 'width': 14 },
     { 'header': 'perAlternateUnitQty', 'key': 'perAlternateUnitQty', 'width': 20 },
     { 'header': 'stockAlertQty', 'key': 'stockAlertQty', 'width': 14 },
-    { 'header': 'purchasePrice', 'key': 'purchasePrice', 'width': 16 },
-    { 'header': 'mrp', 'key': 'mrp', 'width': 12 },
-    { 'header': 'inventory', 'key': 'inventory', 'width': 12 }
+    { 'header': 'inventory', 'key': 'inventory', 'width': 12 },
+    { 'header': 'status', 'key': 'status', 'width': 10 }
 ];
+// Accepted spellings for the boolean `status` column, plus the dropdown values.
+const STATUS_VALUES = [ 'YES', 'NO' ];
+const STATUS_TRUE = [ 'YES', 'Y', 'TRUE', '1', 'ACTIVE' ];
+const STATUS_FALSE = [ 'NO', 'N', 'FALSE', '0', 'INACTIVE' ];
 // Export layout: the template columns prefixed with the product's _id. The _id
 // drives the price-update upload (rows are matched back to products by it).
 const EXPORT_COLUMNS = [
@@ -168,7 +176,7 @@ class ProductService extends CalmService {
     /**
      * Auto-assign the next displayNumber when one isn't provided. Numbering is
      * scoped per category, so each category keeps its own 1..n sequence
-     * (e.g. Rockets 1-20, Fountains 1-15).
+     * (e.g. Whisky 1-20, Beer 1-15).
      */
     async insert( data ) {
         const payload = { ...data };
@@ -208,24 +216,31 @@ class ProductService extends CalmService {
     }
 
     /**
-     * Build the .xlsx bulk-import template. Category and the unit columns carry
-     * data-validation dropdowns populated from the live catalogue, so the
-     * admin can only pick valid values.
+     * Build the .xlsx bulk-import template. The columns mirror the product
+     * form in the admin UI, in the same order. Every lookup column (shop,
+     * category, company, motherCategory, capacity) and every fixed-choice
+     * column (mainUnit, alternateUnit, status) carries a data-validation
+     * dropdown fed from the live catalogue, so only valid values can be typed.
      * @returns { Promise<import('exceljs').Workbook> }
      */
     async buildTemplateWorkbook() {
-        const Category = mongoose.model( 'category' );
-        const Shop = mongoose.model( 'shop' );
-        const [ categories, shops ] = await Promise.all( [
-            Category.find( { 'status': true } )
-                .sort( { 'displayNumber': 1, 'name': 1 } )
-                .select( 'name' ).lean(),
-            Shop.find( { 'status': true } )
-                .sort( { 'displayNumber': 1, 'name': 1 } )
-                .select( 'name' ).lean()
-        ] );
+        // One dropdown per lookup field on the product form.
+        const byOrder = { 'displayNumber': 1, 'name': 1 };
+        const activeNames = ( modelName ) => mongoose.model( modelName )
+            .find( { 'status': true } ).sort( byOrder ).select( 'name' ).lean();
+        const [ categories, shops, companies, motherCategories, capacities ] =
+            await Promise.all( [
+                activeNames( 'category' ),
+                activeNames( 'shop' ),
+                activeNames( 'company' ),
+                activeNames( 'mothercategory' ),
+                activeNames( 'capacity' )
+            ] );
         const categoryNames = categories.map( ( c ) => c.name );
         const shopNames = shops.map( ( s ) => s.name );
+        const companyNames = companies.map( ( c ) => c.name );
+        const motherCategoryNames = motherCategories.map( ( m ) => m.name );
+        const capacityNames = capacities.map( ( c ) => c.name );
 
         const wb = new ExcelJS.Workbook();
         const ws = wb.addWorksheet( 'Products' );
@@ -253,6 +268,18 @@ class ProductService extends CalmService {
         shopNames.forEach( ( n, i ) => {
             lists.getCell( `D${ i + 1 }` ).value = n;
         } );
+        companyNames.forEach( ( n, i ) => {
+            lists.getCell( `E${ i + 1 }` ).value = n;
+        } );
+        motherCategoryNames.forEach( ( n, i ) => {
+            lists.getCell( `F${ i + 1 }` ).value = n;
+        } );
+        capacityNames.forEach( ( n, i ) => {
+            lists.getCell( `G${ i + 1 }` ).value = n;
+        } );
+        STATUS_VALUES.forEach( ( n, i ) => {
+            lists.getCell( `H${ i + 1 }` ).value = n;
+        } );
         lists.state = 'hidden';
 
         // Named ranges → validation sources.
@@ -269,30 +296,53 @@ class ProductService extends CalmService {
         );
         if ( shopNames.length ) {
             wb.definedNames.add(
-                `Lists!$D$1:$D$${ shopNames.length }`, 'ShopList'
+                `Lists!$D$1:$D${ shopNames.length }`, 'ShopList'
             );
         }
+        if ( companyNames.length ) {
+            wb.definedNames.add(
+                `Lists!$E$1:$E${ companyNames.length }`, 'CompanyList'
+            );
+        }
+        if ( motherCategoryNames.length ) {
+            wb.definedNames.add(
+                `Lists!$F$1:$F${ motherCategoryNames.length }`, 'MotherCategoryList'
+            );
+        }
+        if ( capacityNames.length ) {
+            wb.definedNames.add(
+                `Lists!$G$1:$G${ capacityNames.length }`, 'CapacityList'
+            );
+        }
+        wb.definedNames.add(
+            `Lists!$H$1:$H${ STATUS_VALUES.length }`, 'StatusList'
+        );
 
         // A filled example row (row 2) so the expected shape is obvious.
         ws.addRow( {
             'shop': shopNames[ 0 ] || 'MAIN SHOP',
-            'name': 'Moon Gold / Jhalmuri',
-            'category': categoryNames[ 0 ] || 'SPARKLERS',
+            'name': 'Example Whisky 750 ml',
+            'category': categoryNames[ 0 ] || 'WHISKY',
+            'company': companyNames[ 0 ] || 'EXAMPLE DISTILLERY',
+            'motherCategory': motherCategoryNames[ 0 ] || '',
+            'capacity': capacityNames[ 0 ] || '',
+            'mrp': 80,
+            'purchasePrice': 64,
             'mainUnit': 'BOTTLE',
             'alternateUnit': 'CASE',
             'perAlternateUnitQty': 12,
             'stockAlertQty': 10,
-            'purchasePrice': 64,
-            'mrp': 80,
-            'inventory': 0
+            'inventory': 0,
+            'status': 'YES'
         } );
 
         // One list validation per column over the whole data range. A single,
         // non-overlapping sqref per column keeps the workbook valid (overlapping
         // ranges make Excel flag the file as corrupt and drop the dropdowns).
-        // Column layout: A shop | B name | C category | D mainUnit |
-        // E alternateUnit | F perAlternateUnitQty | G stockAlertQty |
-        // H purchasePrice | I mrp | J inventory.
+        // Column layout: A shop | B name | C category | D company |
+        // E motherCategory | F capacity | G mrp | H purchasePrice |
+        // I mainUnit | J alternateUnit | K perAlternateUnitQty |
+        // L stockAlertQty | M inventory | N status.
         const lastRow = 1000;
         const listValidation = ( name, message ) => ( {
             'type': 'list',
@@ -315,15 +365,39 @@ class ProductService extends CalmService {
                 listValidation( 'CategoryList', 'Pick a category from the list.' )
             );
         }
+        if ( companyNames.length ) {
+            ws.dataValidations.add(
+                `D2:D${ lastRow }`,
+                listValidation( 'CompanyList', 'Pick a company from the list.' )
+            );
+        }
+        if ( motherCategoryNames.length ) {
+            ws.dataValidations.add(
+                `E2:E${ lastRow }`,
+                listValidation(
+                    'MotherCategoryList', 'Pick a mother category from the list.'
+                )
+            );
+        }
+        if ( capacityNames.length ) {
+            ws.dataValidations.add(
+                `F2:F${ lastRow }`,
+                listValidation( 'CapacityList', 'Pick a capacity from the list.' )
+            );
+        }
         ws.dataValidations.add(
-            `D2:D${ lastRow }`,
+            `I2:I${ lastRow }`,
             listValidation( 'MainUnitList', 'Pick a main unit from the list.' )
         );
         ws.dataValidations.add(
-            `E2:E${ lastRow }`,
+            `J2:J${ lastRow }`,
             listValidation(
                 'AlternateUnitList', 'Pick an alternate unit from the list.'
             )
+        );
+        ws.dataValidations.add(
+            `N2:N${ lastRow }`,
+            listValidation( 'StatusList', 'Status must be YES or NO.' )
         );
 
         return wb;
@@ -332,7 +406,7 @@ class ProductService extends CalmService {
     /**
      * Build an .xlsx export of every product, using the same column layout as
      * the import template (so an exported file can be edited and re-uploaded).
-     * Category is written as its name.
+     * Every reference is written as its name, and status as YES / NO.
      * @returns { Promise<import('exceljs').Workbook> }
      */
     async buildItemsWorkbook( shopId ) {
@@ -344,8 +418,11 @@ class ProductService extends CalmService {
             .find( filter )
             .sort( { 'displayNumber': 1, 'createdAt': 1 } )
             .populate( [
+                { 'path': 'shop', 'select': 'name' },
                 { 'path': 'category', 'select': 'name' },
-                { 'path': 'shop', 'select': 'name' }
+                { 'path': 'company', 'select': 'name' },
+                { 'path': 'motherCategory', 'select': 'name' },
+                { 'path': 'capacity', 'select': 'name' }
             ] )
             .lean();
 
@@ -356,19 +433,24 @@ class ProductService extends CalmService {
         header.font = { 'bold': true };
         header.alignment = { 'horizontal': 'center' };
 
+        const refName = ( ref ) => ( ref && ref.name ) || '';
         products.forEach( ( p ) => {
             ws.addRow( {
                 '_id': String( p._id ),
-                'shop': ( p.shop && p.shop.name ) || '',
+                'shop': refName( p.shop ),
                 'name': p.name || '',
-                'category': ( p.category && p.category.name ) || '',
+                'category': refName( p.category ),
+                'company': refName( p.company ),
+                'motherCategory': refName( p.motherCategory ),
+                'capacity': refName( p.capacity ),
+                'mrp': p.mrp,
+                'purchasePrice': p.purchasePrice,
                 'mainUnit': p.mainUnit || '',
                 'alternateUnit': p.alternateUnit || '',
                 'perAlternateUnitQty': p.perAlternateUnitQty,
                 'stockAlertQty': p.stockAlertQty,
-                'purchasePrice': p.purchasePrice,
-                'mrp': p.mrp,
-                'inventory': p.inventory
+                'inventory': p.inventory,
+                'status': p.status === false ? 'NO' : 'YES'
             } );
         } );
 
@@ -671,9 +753,10 @@ class ProductService extends CalmService {
     }
 
     /**
-     * Parse a filled .xlsx template buffer and bulk-create products. Category
-     * names are resolved to ids (case-insensitive); invalid rows are reported
-     * back and skipped rather than failing the whole import.
+     * Parse a filled .xlsx template buffer and bulk-create products. Every
+     * lookup column (shop, category, company, motherCategory, capacity) is
+     * resolved from a name to an id, case-insensitively; invalid rows are
+     * reported back and skipped rather than failing the whole import.
      * @param { Buffer } buffer - the uploaded workbook
      * @param { string } [userId] - the importing admin (stored as createdBy)
      * @returns { Promise<{ created: number, failed: number, errors: Array }> }
@@ -688,18 +771,25 @@ class ProductService extends CalmService {
             throw error;
         }
 
-        const Category = mongoose.model( 'category' );
-        const Shop = mongoose.model( 'shop' );
-        const [ categories, shops ] = await Promise.all( [
-            Category.find().select( 'name' ).lean(),
-            Shop.find().select( 'name' ).lean()
-        ] );
-        const catMap = new Map(
-            categories.map( ( c ) => [ String( c.name ).trim().toLowerCase(), c._id ] )
+        // Name -> _id for every lookup column, matched case-insensitively.
+        const allNames = ( modelName ) => mongoose.model( modelName )
+            .find().select( 'name' ).lean();
+        const [ categories, shops, companies, motherCategories, capacities ] =
+            await Promise.all( [
+                allNames( 'category' ),
+                allNames( 'shop' ),
+                allNames( 'company' ),
+                allNames( 'mothercategory' ),
+                allNames( 'capacity' )
+            ] );
+        const idMap = ( rows ) => new Map(
+            rows.map( ( r ) => [ String( r.name ).trim().toLowerCase(), r._id ] )
         );
-        const shopMap = new Map(
-            shops.map( ( s ) => [ String( s.name ).trim().toLowerCase(), s._id ] )
-        );
+        const catMap = idMap( categories );
+        const shopMap = idMap( shops );
+        const companyMap = idMap( companies );
+        const motherCatMap = idMap( motherCategories );
+        const capacityMap = idMap( capacities );
 
         // Map columns by their header name so column order can vary.
         const colIndex = {};
@@ -720,6 +810,9 @@ class ProductService extends CalmService {
             const name = String( cellOf( row, 'name' ) ).trim();
             const catName = String( cellOf( row, 'category' ) ).trim();
             const shopName = String( cellOf( row, 'shop' ) ).trim();
+            const companyName = String( cellOf( row, 'company' ) ).trim();
+            const motherCatName = String( cellOf( row, 'motherCategory' ) ).trim();
+            const capacityName = String( cellOf( row, 'capacity' ) ).trim();
 
             // Skip blank rows entirely.
             if ( !name && !catName && !shopName ) continue;
@@ -743,13 +836,41 @@ class ProductService extends CalmService {
             const stockAlertQty = rawAlertQty === '' ? 0 : Number( rawAlertQty );
             const rawInventory = String( cellOf( row, 'inventory' ) ).trim();
             const inventory = rawInventory === '' ? 0 : Number( rawInventory );
+            // Active unless the row says otherwise, so a template without the
+            // status column (or with it left blank) still imports.
+            const rawStatus = String( cellOf( row, 'status' ) ).trim().toUpperCase();
 
             const rowErrors = [];
+            let status = true;
+            if ( rawStatus !== '' ) {
+                if ( STATUS_TRUE.includes( rawStatus ) ) status = true;
+                else if ( STATUS_FALSE.includes( rawStatus ) ) status = false;
+                else rowErrors.push( `status "${ rawStatus }" must be YES or NO` );
+            }
             if ( !name ) rowErrors.push( 'name is required' );
             const shop = shopMap.get( shopName.toLowerCase() );
             if ( !shop ) rowErrors.push( `shop "${ shopName }" not found` );
             const category = catMap.get( catName.toLowerCase() );
             if ( !category ) rowErrors.push( `category "${ catName }" not found` );
+            // Company is required on the form, so it is required here too.
+            const company = companyMap.get( companyName.toLowerCase() );
+            if ( !company ) rowErrors.push( `company "${ companyName }" not found` );
+            // Mother category and capacity are optional: blank is fine, but a
+            // value that matches nothing is an error rather than a silent drop.
+            let motherCategory;
+            if ( motherCatName ) {
+                motherCategory = motherCatMap.get( motherCatName.toLowerCase() );
+                if ( !motherCategory ) {
+                    rowErrors.push( `motherCategory "${ motherCatName }" not found` );
+                }
+            }
+            let capacity;
+            if ( capacityName ) {
+                capacity = capacityMap.get( capacityName.toLowerCase() );
+                if ( !capacity ) {
+                    rowErrors.push( `capacity "${ capacityName }" not found` );
+                }
+            }
             if ( !MAIN_UNITS.includes( mainUnit ) ) {
                 rowErrors.push( `mainUnit "${ mainUnit }" is invalid` );
             }
@@ -775,11 +896,17 @@ class ProductService extends CalmService {
                 continue;
             }
 
-            docs.push( {
-                name, shop, category, mainUnit, alternateUnit, mrp, purchasePrice,
-                perAlternateUnitQty, stockAlertQty, inventory,
+            const doc = {
+                name, shop, category, company, mrp, purchasePrice,
+                mainUnit, alternateUnit, perAlternateUnitQty, stockAlertQty,
+                inventory, status,
                 'createdBy': userId
-            } );
+            };
+            // Leave the optional refs off entirely when blank; an explicit
+            // undefined would still write a null into the document.
+            if ( motherCategory ) doc.motherCategory = motherCategory;
+            if ( capacity ) doc.capacity = capacity;
+            docs.push( doc );
         }
 
         let created = 0;

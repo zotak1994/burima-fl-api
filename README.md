@@ -47,21 +47,27 @@ Every CRUD module exposes:
 | PUT    | `/:id`        | Update        |
 | DELETE | `/:id`        | Delete        |
 
-Products automatically **populate** their `category` on list/get. The product module also provides Excel bulk import/export, a price-update upload, a reorder endpoint, and a category-grouped price-list PDF.
+Products automatically **populate** their `shop`, `category`, `motherCategory`, `company` and `capacity` on list/get. The product module also provides Excel bulk import/export, a price-update upload, a reorder endpoint, and a category-grouped price-list PDF.
 
 ### Example
 
 ```bash
+# Create a shop (every product belongs to one)
+curl -X POST http://127.0.0.1:5001/api/shops \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <token>" \
+  -d '{"name":"Main Road Outlet","phone":"9876543210"}'
+
 # Create a category
 curl -X POST http://127.0.0.1:5001/api/categories \
   -H "Content-Type: application/json" \
-  -d '{"name":"Sparklers","slug":"sparklers","icon":"Sparkles"}'
+  -d '{"name":"Whisky","slug":"whisky","icon":"Wine"}'
 
-# Create a product (use the category _id returned above)
+# Create a product (use the shop and category _ids returned above)
 curl -X POST http://127.0.0.1:5001/api/products \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <token>" \
-  -d '{"name":"Gold Crackle Sparklers","code":"SPK-GLD10-01","category":"<catId>","price":6.99,"wholesalePrice":5.59}'
+  -d '{"name":"Example Whisky 750 ml","shop":"<shopId>","category":"<catId>","mrp":1250,"purchasePrice":980,"perAlternateUnitQty":12,"stockAlertQty":6,"inventory":0}'
 ```
 
 ## Adding more modules
