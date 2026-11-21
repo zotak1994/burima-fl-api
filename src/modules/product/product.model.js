@@ -13,6 +13,15 @@ class Product {
                 'required': true,
                 'trim': true
             },
+            'code': {
+                // The shop's own product code / SKU. Optional, so existing
+                // rows and partial bulk imports stay valid. Stored upper-case
+                // and trimmed, and unique within a shop when set (see the
+                // partial index below).
+                'type': String,
+                'trim': true,
+                'uppercase': true
+            },
             'shop': {
                 // The outlet this product belongs to. Every product is owned by
                 // exactly one shop; sell and purchase orders will hang off the
@@ -27,22 +36,24 @@ class Product {
                 'ref': 'category',
                 'required': true
             },
-            // Both lookups are optional so existing rows and partial bulk
-            // imports stay valid; the admin form still asks for company.
             'motherCategory': {
                 'type': Schema.Types.ObjectId,
                 'ref': 'mothercategory',
+                'required': true,
                 'index': true
             },
+            // Optional in the schema so existing rows stay valid, though the
+            // admin form does ask for it.
             'company': {
                 'type': Schema.Types.ObjectId,
                 'ref': 'company',
                 'index': true
             },
             'capacity': {
-                // Bottle size. Optional, so partial imports stay valid.
+                // Bottle size.
                 'type': Schema.Types.ObjectId,
                 'ref': 'capacity',
+                'required': true,
                 'index': true
             },
             'mrp': {
@@ -117,6 +128,20 @@ class Product {
         }, { 'timestamps': true } );
 
         schema.plugin( uniqueValidator, { 'message': '{PATH} already exists' } );
+        // A code is unique per SHOP, not globally: separate outlets keep their
+        // own numbering and will legitimately reuse the same codes. The partial
+        // filter is what allows any number of products to carry no code at all
+        // — a plain unique index treats every missing value as the same null
+        // and would reject the second code-less product. The service checks for
+        // clashes first so the admin gets a readable message; this index is the
+        // backstop for concurrent writes.
+        schema.index(
+            { 'shop': 1, 'code': 1 },
+            {
+                'unique': true,
+                'partialFilterExpression': { 'code': { '$type': 'string' } }
+            }
+        );
         try {
             mongoose.model( 'product', schema );
         } catch ( e ) {

@@ -1,5 +1,6 @@
 'use strict';
 const { CalmService } = require( '../../../system/core/CalmService' );
+const { CalmError } = require( '../../../system/core/CalmError' );
 
 class ShopService extends CalmService {
     // Setting Global Populate to apply in Get All & Get Single
@@ -50,11 +51,10 @@ class ShopService extends CalmService {
             || this.model.db.model( 'product' );
         const inUse = await Product.countDocuments( { 'shop': id } );
         if ( inUse > 0 ) {
-            const error = new Error(
+            throw new CalmError(
+                'VALIDATION_ERROR',
                 `This shop still has ${ inUse } product(s). Move or remove them first.`
             );
-            error.statusCode = 400;
-            throw error;
         }
         return super.delete( id );
     }

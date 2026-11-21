@@ -19,18 +19,11 @@ router.get( '/', ProductController.getAll );
 // NOTE: static paths must be declared before '/:id' so they aren't read as ids.
 router.get( '/template', AuthController.checkLogin, ProductController.downloadTemplate );
 router.get( '/export', AuthController.checkLogin, ProductController.downloadItems );
-router.get( '/price-list', AuthController.checkLogin, ProductController.downloadPriceList );
 router.post(
     '/upload',
     AuthController.checkLogin,
     upload.single( 'file' ),
     ProductController.uploadTemplate
-);
-router.post(
-    '/update-prices',
-    AuthController.checkLogin,
-    upload.single( 'file' ),
-    ProductController.uploadPrices
 );
 router.put( '/reorder', AuthController.checkLogin, ProductController.reorder );
 router.get( '/:id', ProductController.get );

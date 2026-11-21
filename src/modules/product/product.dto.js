@@ -4,6 +4,7 @@ class GetDTO {
     constructor( { ...props } ) {
         this._id = props._id;
         this.name = props.name;
+        this.code = props.code;
         this.shop = props.shop;
         this.category = props.category;
         this.motherCategory = props.motherCategory;
@@ -32,6 +33,7 @@ class GetDTO {
 class InsertDTO {
     constructor( { ...props } ) {
         this.name = props.name;
+        this.code = props.code;
         this.shop = props.shop;
         this.category = props.category;
         this.motherCategory = props.motherCategory;
@@ -55,6 +57,7 @@ class InsertDTO {
 class UpdateDTO {
     constructor( { ...props } ) {
         this.name = props.name;
+        this.code = props.code;
         this.shop = props.shop;
         this.category = props.category;
         this.motherCategory = props.motherCategory;

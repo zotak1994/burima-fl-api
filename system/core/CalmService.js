@@ -1,4 +1,36 @@
 'use strict';
+
+/**
+ * Named sort orders accepted as `?sort=`. Clients send a name rather than a
+ * Mongo sort object so the API never has to trust a caller-built sort.
+ * `display` is the admin-arranged order that drag-to-reorder writes.
+ */
+const NAMED_SORTS = {
+    'az': { 'name': 1 },
+    'za': { 'name': -1 },
+    'latest': { 'createdAt': -1 },
+    'oldest': { 'createdAt': 1 },
+    'display': { 'displayNumber': 1, 'createdAt': 1 }
+};
+
+/**
+ * Sorting by name needs a case-insensitive collation: Mongo's default
+ * byte order puts every capital ahead of every lower-case letter, so
+ * "Zebra" would sort before "apple".
+ */
+const NAME_SORTS = [ 'az', 'za' ];
+const NAME_COLLATION = { 'locale': 'en', 'strength': 2 };
+
+/** The Mongo sort for a named order, or undefined when the name is unknown. */
+function resolveNamedSort( sort ) {
+    if ( !sort ) return undefined;
+    return NAMED_SORTS[ String( sort ).trim().toLowerCase() ];
+}
+
+/** Whether a named order needs the case-insensitive collation. */
+function needsNameCollation( sort ) {
+    return NAME_SORTS.includes( String( sort || '' ).trim().toLowerCase() );
+}
 const autoBind = require( 'auto-bind' );
 class CalmService {
     populateFields = [];
@@ -24,7 +56,12 @@ class CalmService {
      *
      * Supported query params: skip (default 0), limit (default 100),
      * search (case-insensitive match across the module's searchFields),
-     * sortBy, and any other key as an exact filter.
+     * sort (az | za | latest | oldest | display), sortBy, and any other key
+     * as an exact filter.
+     *
+     * A named `sort` takes precedence over `sortBy`, because a module's own
+     * getAll() sets its default sortBy before delegating here — without that
+     * precedence the module default would always win over the caller.
      */
     async getAll( query, ops = {} ) {
         let populateFields = this.populateFields;
@@ -33,12 +70,21 @@ class CalmService {
         }
         const searchFields = Array.isArray( ops.searchFields ) ? ops.searchFields : this.searchFields;
 
+        // `sort` must be destructured out even when unrecognised: anything
+        // left in restQuery becomes an exact-match filter, so a stray
+        // ?sort=whatever would filter on a field that does not exist and
+        // return nothing at all.
         // eslint-disable-next-line prefer-const
-        let { skip, limit, sortBy, search, ...restQuery } = query;
+        let { skip, limit, sortBy, sort, search, ...restQuery } = query;
 
         skip = skip ? Number( skip ) : 0;
         limit = limit ? Number( limit ) : 100;
-        sortBy = sortBy ? sortBy : { 'createdAt': -1 };
+        const named = resolveNamedSort( sort );
+        if ( named ) {
+            sortBy = named;
+        } else {
+            sortBy = sortBy ? sortBy : { 'createdAt': -1 };
+        }
 
         // Build the Mongo filter from any exact-match params, plus an optional text search.
         const filter = { ...restQuery };
@@ -52,7 +98,11 @@ class CalmService {
         }
 
         try {
-            const items = await this.model.find( filter ).sort( sortBy ).skip( skip ).limit( limit ).populate(populateFields);
+            let listQuery = this.model.find( filter ).sort( sortBy ).skip( skip ).limit( limit ).populate(populateFields);
+            if ( named && needsNameCollation( sort ) ) {
+                listQuery = listQuery.collation( NAME_COLLATION );
+            }
+            const items = await listQuery;
 
             const total = await this.model.countDocuments( filter );
 
@@ -146,5 +196,9 @@ class CalmService {
 }
 
 module.exports = {
+    NAMED_SORTS,
+    NAME_COLLATION,
+    resolveNamedSort,
+    needsNameCollation,
     CalmService
 };

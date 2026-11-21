@@ -1,27 +1,35 @@
 'use strict';
-const path = require( 'path' );
 const mongoose = require( 'mongoose' );
 const ExcelJS = require( 'exceljs' );
-const PDFDocument = require( 'pdfkit' );
+const {
+    CalmService, NAMED_SORTS, NAME_COLLATION, needsNameCollation
+} = require( '../../../system/core/CalmService' );
+const { CalmError } = require( '../../../system/core/CalmError' );
 
-// Bundled Unicode fonts for the price-list PDF. PDFKit's built-in Helvetica
-// cannot render the rupee sign (₹) or many symbols, so we embed Noto Sans
-// (which includes ₹ and ®) and use it for the whole document.
-const FONT_REGULAR = path.join( __dirname, '..', '..', 'assets', 'fonts', 'NotoSans-Regular.ttf' );
-const FONT_BOLD = path.join( __dirname, '..', '..', 'assets', 'fonts', 'NotoSans-Bold.ttf' );
-const { CalmService } = require( '../../../system/core/CalmService' );
+// Products carry the shared named sorts, except that their "display" order
+// is the catalogue order: category position first, then the product's own
+// position within it.
+const PRODUCT_NAMED_SORTS = {
+    ...NAMED_SORTS,
+    'display': {
+        'categoryDoc.displayNumber': 1, 'displayNumber': 1, 'createdAt': 1
+    }
+};
 
 // Keep these in step with the enums on the product model.
 const MAIN_UNITS = [ 'BOTTLE' ];
 const ALTERNATE_UNITS = [ 'CASE' ];
-// Column order of the bulk-import template.
+// Column order of the bulk-import template. Deliberately the same field
+// order as the product form in the admin UI, with `shop` in front because
+// a file may span outlets.
 const TEMPLATE_COLUMNS = [
     { 'header': 'shop', 'key': 'shop', 'width': 22 },
-    { 'header': 'name', 'key': 'name', 'width': 36 },
+    { 'header': 'motherCategory', 'key': 'motherCategory', 'width': 22 },
     { 'header': 'category', 'key': 'category', 'width': 22 },
     { 'header': 'company', 'key': 'company', 'width': 22 },
-    { 'header': 'motherCategory', 'key': 'motherCategory', 'width': 22 },
-    { 'header': 'capacity', 'key': 'capacity', 'width': 14 },
+    { 'header': 'code', 'key': 'code', 'width': 16 },
+    { 'header': 'name', 'key': 'name', 'width': 36 },
+    { 'header': 'measurement', 'key': 'capacity', 'width': 14 },
     { 'header': 'mrp', 'key': 'mrp', 'width': 12 },
     { 'header': 'purchasePrice', 'key': 'purchasePrice', 'width': 16 },
     { 'header': 'mainUnit', 'key': 'mainUnit', 'width': 12 },
@@ -35,8 +43,8 @@ const TEMPLATE_COLUMNS = [
 const STATUS_VALUES = [ 'YES', 'NO' ];
 const STATUS_TRUE = [ 'YES', 'Y', 'TRUE', '1', 'ACTIVE' ];
 const STATUS_FALSE = [ 'NO', 'N', 'FALSE', '0', 'INACTIVE' ];
-// Export layout: the template columns prefixed with the product's _id. The _id
-// drives the price-update upload (rows are matched back to products by it).
+// Export layout: the template columns prefixed with the product's _id, which
+// identifies the row unambiguously when comparing an export against the data.
 const EXPORT_COLUMNS = [
     { 'header': '_id', 'key': '_id', 'width': 26 },
     ...TEMPLATE_COLUMNS
@@ -56,6 +64,38 @@ function cellText( value ) {
     return value;
 }
 
+/**
+ * Trim and upper-case a product code. A blank value becomes undefined, which
+ * means "no code" — never an empty string, because the partial unique index
+ * counts '' as a real value and so would let only one product have a blank.
+ * @param { * } value
+ * @returns { string | undefined }
+ */
+function normaliseCode( value ) {
+    if ( value === null || value === undefined ) return undefined;
+    const text = String( cellText( value ) ).trim().toUpperCase();
+    return text === '' ? undefined : text;
+}
+
+/**
+ * Resolve a required lookup cell to an id, recording a readable message when
+ * the cell is blank or names something that does not exist.
+ * @param { string } label - the column name, used in the message
+ * @param { Map<string, *> } map - lower-cased name -> id
+ * @param { string } raw - the cell's trimmed text
+ * @param { string[] } rowErrors - collected messages for this row
+ * @returns { * | undefined }
+ */
+function resolveRequiredRef( label, map, raw, rowErrors ) {
+    if ( !raw ) {
+        rowErrors.push( `${ label } is required` );
+        return undefined;
+    }
+    const id = map.get( String( raw ).toLowerCase() );
+    if ( !id ) rowErrors.push( `${ label } "${ raw }" not found` );
+    return id;
+}
+
 class ProductService extends CalmService {
     // Setting Global Populate to apply in Get All & Get Single
     populateFields = [
@@ -66,7 +106,7 @@ class ProductService extends CalmService {
         { path: 'capacity', select: 'name volumeMl status displayNumber' }
     ];
     // Fields matched by the `search` query param
-    searchFields = [ 'name' ];
+    searchFields = [ 'name', 'code' ];
     constructor( model ) {
         super( model );
     }
@@ -75,7 +115,12 @@ class ProductService extends CalmService {
      * Convert a sortBy value (Mongo object, or a space-separated string like
      * '-mrp name') into an aggregation $sort object.
      */
-    buildSort( sortBy ) {
+    buildSort( sortBy, sort ) {
+        // A named order wins over sortBy — see CalmService.getAll.
+        const key = String( sort || '' ).trim().toLowerCase();
+        if ( PRODUCT_NAMED_SORTS[ key ] ) {
+            return PRODUCT_NAMED_SORTS[ key ];
+        }
         if ( sortBy && typeof sortBy === 'object' ) {
             return sortBy;
         }
@@ -100,8 +145,10 @@ class ProductService extends CalmService {
      * because the category order lives on the referenced category document.
      */
     async getAll( query, ops = {} ) {
+        // `sort` is pulled out here for the same reason as in CalmService:
+        // a leftover key becomes an exact-match filter on a missing field.
         // eslint-disable-next-line prefer-const
-        let { skip, limit, sortBy, search, ...restQuery } = query;
+        let { skip, limit, sortBy, sort, search, ...restQuery } = query;
         skip = skip ? Number( skip ) : 0;
         limit = limit ? Number( limit ) : 100;
 
@@ -138,7 +185,7 @@ class ProductService extends CalmService {
         }
 
         const categoryCollection = mongoose.model( 'category' ).collection.collectionName;
-        const sortStage = this.buildSort( sortBy );
+        const sortStage = this.buildSort( sortBy, sort );
 
 
         try {
@@ -158,7 +205,13 @@ class ProductService extends CalmService {
                 { $limit: limit }
             ];
 
-            let items = await this.model.aggregate( pipeline );
+            const aggregation = this.model.aggregate( pipeline );
+            if ( needsNameCollation( sort ) ) {
+                // Same reason as CalmService: byte order would put every
+                // capital ahead of every lower-case letter.
+                aggregation.collation( NAME_COLLATION );
+            }
+            let items = await aggregation;
             // Drop the lookup helper, then populate refs so the response shape
             // matches the normal find()+populate() output used by the DTOs.
             items.forEach( ( it ) => delete it.categoryDoc );
@@ -180,6 +233,14 @@ class ProductService extends CalmService {
      */
     async insert( data ) {
         const payload = { ...data };
+        const code = normaliseCode( payload.code );
+        if ( code === undefined ) {
+            // Drop the key rather than store '' — see normaliseCode.
+            delete payload.code;
+        } else {
+            payload.code = code;
+            await this.assertCodeFree( payload.shop, code );
+        }
         if ( payload.displayNumber === undefined || payload.displayNumber === null ) {
             const filter = payload.category ? { 'category': payload.category } : {};
             const last = await this.model
@@ -189,6 +250,57 @@ class ProductService extends CalmService {
             payload.displayNumber = last ? ( last.displayNumber || 0 ) + 1 : 1;
         }
         return super.insert( payload );
+    }
+
+    /**
+     * Reject a product code already used by another product in the same shop.
+     * Codes are per shop, so the same code in a different outlet is fine.
+     * @param { * } shop - the owning shop's id
+     * @param { string } code - an already-normalised code
+     * @param { string } [excludeId] - the product being edited, if any
+     */
+    async assertCodeFree( shop, code, excludeId ) {
+        if ( !shop || !code ) return;
+        const filter = { 'shop': shop, 'code': code };
+        if ( excludeId ) filter._id = { '$ne': excludeId };
+        const clash = await this.model.findOne( filter ).select( 'name' ).lean();
+        if ( clash ) {
+            throw new CalmError(
+                'VALIDATION_ERROR',
+                `Code "${ code }" is already used by "${ clash.name }" in this shop.`
+            );
+        }
+    }
+
+    /**
+     * Normalise the code on the way in, and let an explicitly blank code clear
+     * the stored one.
+     * @param { string } id
+     * @param { object } data
+     */
+    async update( id, data ) {
+        const payload = { ...data };
+        if ( 'code' in payload ) {
+            const code = normaliseCode( payload.code );
+            if ( code === undefined ) {
+                // Cleared in the form: remove the field instead of writing ''.
+                // Mongoose merges the plain fields into $set alongside this.
+                delete payload.code;
+                payload.$unset = { ...( payload.$unset || {} ), 'code': 1 };
+            } else {
+                payload.code = code;
+                // The form always restates the shop, but fall back to the
+                // product's own shop so a partial payload still validates.
+                let shop = payload.shop;
+                if ( !shop ) {
+                    const current = await this.model.findById( id )
+                        .select( 'shop' ).lean();
+                    shop = current && current.shop;
+                }
+                await this.assertCodeFree( shop, code, id );
+            }
+        }
+        return super.update( id, payload );
     }
 
     /**
@@ -216,6 +328,19 @@ class ProductService extends CalmService {
     }
 
     /**
+     * The name of one shop, for labelling a download. Empty when the id is
+     * missing or unknown, so callers can fall back to an unlabelled filename.
+     * @param { string } [shopId]
+     * @returns { Promise<string> }
+     */
+    async shopLabel( shopId ) {
+        if ( !shopId || !mongoose.Types.ObjectId.isValid( shopId ) ) return '';
+        const shop = await mongoose.model( 'shop' )
+            .findById( shopId ).select( 'name' ).lean();
+        return ( shop && shop.name ) || '';
+    }
+
+    /**
      * Build the .xlsx bulk-import template. The columns mirror the product
      * form in the admin UI, in the same order. Every lookup column (shop,
      * category, company, motherCategory, capacity) and every fixed-choice
@@ -223,7 +348,7 @@ class ProductService extends CalmService {
      * dropdown fed from the live catalogue, so only valid values can be typed.
      * @returns { Promise<import('exceljs').Workbook> }
      */
-    async buildTemplateWorkbook() {
+    async buildTemplateWorkbook( shopId ) {
         // One dropdown per lookup field on the product form.
         const byOrder = { 'displayNumber': 1, 'name': 1 };
         const activeNames = ( modelName ) => mongoose.model( modelName )
@@ -241,6 +366,12 @@ class ProductService extends CalmService {
         const companyNames = companies.map( ( c ) => c.name );
         const motherCategoryNames = motherCategories.map( ( m ) => m.name );
         const capacityNames = capacities.map( ( c ) => c.name );
+        // The shop this template was downloaded for. It is written on the
+        // example row only; the importer carries it down to the rows below,
+        // so it never has to be repeated. Every other shop stays in the
+        // dropdown, so a file can still be retargeted or cover several
+        // outlets by naming a new shop part-way down.
+        const activeShopName = await this.shopLabel( shopId );
 
         const wb = new ExcelJS.Workbook();
         const ws = wb.addWorksheet( 'Products' );
@@ -320,12 +451,13 @@ class ProductService extends CalmService {
 
         // A filled example row (row 2) so the expected shape is obvious.
         ws.addRow( {
-            'shop': shopNames[ 0 ] || 'MAIN SHOP',
-            'name': 'Example Whisky 750 ml',
+            'shop': activeShopName || shopNames[ 0 ] || 'MAIN SHOP',
+            'motherCategory': motherCategoryNames[ 0 ] || 'IMFL',
             'category': categoryNames[ 0 ] || 'WHISKY',
             'company': companyNames[ 0 ] || 'EXAMPLE DISTILLERY',
-            'motherCategory': motherCategoryNames[ 0 ] || '',
-            'capacity': capacityNames[ 0 ] || '',
+            'code': 'WH-750-01',
+            'name': 'Example Whisky 750 ml',
+            'capacity': capacityNames[ 0 ] || '750 ml',
             'mrp': 80,
             'purchasePrice': 64,
             'mainUnit': 'BOTTLE',
@@ -339,10 +471,10 @@ class ProductService extends CalmService {
         // One list validation per column over the whole data range. A single,
         // non-overlapping sqref per column keeps the workbook valid (overlapping
         // ranges make Excel flag the file as corrupt and drop the dropdowns).
-        // Column layout: A shop | B name | C category | D company |
-        // E motherCategory | F capacity | G mrp | H purchasePrice |
-        // I mainUnit | J alternateUnit | K perAlternateUnitQty |
-        // L stockAlertQty | M inventory | N status.
+        // Column layout: A shop | B motherCategory | C category |
+        // D company | E code | F name | G capacity | H mrp |
+        // I purchasePrice | J mainUnit | K alternateUnit |
+        // L perAlternateUnitQty | M stockAlertQty | N inventory | O status.
         const lastRow = 1000;
         const listValidation = ( name, message ) => ( {
             'type': 'list',
@@ -373,7 +505,7 @@ class ProductService extends CalmService {
         }
         if ( motherCategoryNames.length ) {
             ws.dataValidations.add(
-                `E2:E${ lastRow }`,
+                `B2:B${ lastRow }`,
                 listValidation(
                     'MotherCategoryList', 'Pick a mother category from the list.'
                 )
@@ -381,22 +513,22 @@ class ProductService extends CalmService {
         }
         if ( capacityNames.length ) {
             ws.dataValidations.add(
-                `F2:F${ lastRow }`,
+                `G2:G${ lastRow }`,
                 listValidation( 'CapacityList', 'Pick a capacity from the list.' )
             );
         }
         ws.dataValidations.add(
-            `I2:I${ lastRow }`,
+            `J2:J${ lastRow }`,
             listValidation( 'MainUnitList', 'Pick a main unit from the list.' )
         );
         ws.dataValidations.add(
-            `J2:J${ lastRow }`,
+            `K2:K${ lastRow }`,
             listValidation(
                 'AlternateUnitList', 'Pick an alternate unit from the list.'
             )
         );
         ws.dataValidations.add(
-            `N2:N${ lastRow }`,
+            `O2:O${ lastRow }`,
             listValidation( 'StatusList', 'Status must be YES or NO.' )
         );
 
@@ -438,10 +570,11 @@ class ProductService extends CalmService {
             ws.addRow( {
                 '_id': String( p._id ),
                 'shop': refName( p.shop ),
-                'name': p.name || '',
+                'motherCategory': refName( p.motherCategory ),
                 'category': refName( p.category ),
                 'company': refName( p.company ),
-                'motherCategory': refName( p.motherCategory ),
+                'code': p.code || '',
+                'name': p.name || '',
                 'capacity': refName( p.capacity ),
                 'mrp': p.mrp,
                 'purchasePrice': p.purchasePrice,
@@ -458,317 +591,27 @@ class ProductService extends CalmService {
     }
 
     /**
-     * Build a grouped price-list PDF: each active category as a heading
-     * followed by its active products, in the same order as the catalogue
-     * (category displayNumber, then product displayNumber). The rate column is
-     * the retail `mrp` or the `purchasePrice` depending on `type`.
-     * @param { 'retailer' | 'wholesale' } type
-     * @param { string } [shopId] - limit the list to one shop
-     * @returns { Promise<Buffer> }
-     */
-    async buildPriceListPdf( type, shopId ) {
-        const wholesale = type === 'wholesale';
-        const Category = mongoose.model( 'category' );
-        // A price list is per outlet; without a shop it would mix every shop's
-        // catalogue into one document.
-        const productFilter = { 'status': true };
-        if ( shopId && mongoose.Types.ObjectId.isValid( shopId ) ) {
-            productFilter.shop = new mongoose.Types.ObjectId( shopId );
-        }
-        const [ categories, products ] = await Promise.all( [
-            Category.find( { 'status': true } )
-                .sort( { 'displayNumber': 1, 'name': 1 } )
-                .select( 'name' ).lean(),
-            this.model.find( productFilter )
-                .sort( { 'displayNumber': 1, 'createdAt': 1 } )
-                .populate( [
-                    { 'path': 'category', 'select': 'name' }
-                ] )
-                .lean()
-        ] );
-
-        // Group products by their category id (preserves the sorted order).
-        const byCategory = new Map();
-        const orphans = [];
-        products.forEach( ( p ) => {
-            const id = p.category && p.category._id
-                ? String( p.category._id ) : null;
-            if ( !id ) {
-                orphans.push( p );
-                return;
-            }
-            if ( !byCategory.has( id ) ) byCategory.set( id, [] );
-            byCategory.get( id ).push( p );
-        } );
-
-        const groups = categories
-            .map( ( c ) => ( {
-                'name': c.name,
-                'items': byCategory.get( String( c._id ) ) || []
-            } ) )
-            .filter( ( g ) => g.items.length );
-        if ( orphans.length ) {
-            groups.push( { 'name': 'Others', 'items': orphans } );
-        }
-
-        const money = ( n ) => '₹' + Number( n || 0 ).toLocaleString( 'en-IN' );
-        const rateOf = ( p ) => ( wholesale ? p.purchasePrice : p.mrp );
-
-        const doc = new PDFDocument( { 'size': 'A4', 'margin': 40 } );
-        // Register the embedded Unicode fonts and use them throughout, so the
-        // rupee sign (₹) and the registered mark (®) render correctly.
-        doc.registerFont( 'Body', FONT_REGULAR );
-        doc.registerFont( 'BodyBold', FONT_BOLD );
-        const FONT = 'Body';
-        const FONT_B = 'BodyBold';
-        const chunks = [];
-        doc.on( 'data', ( c ) => chunks.push( c ) );
-        const done = new Promise( ( resolve, reject ) => {
-            doc.on( 'end', () => resolve( Buffer.concat( chunks ) ) );
-            doc.on( 'error', reject );
-        } );
-
-        const accent = wholesale ? '#b45309' : '#b91c1c'; // amber / red
-        const left = doc.page.margins.left;
-        const right = doc.page.width - doc.page.margins.right;
-        const tableW = right - left;
-        const bottom = () => doc.page.height - doc.page.margins.bottom;
-        const PAD = 6;
-
-        // Column geometry: S.No | Item | Rate | Unit. The Item column flexes
-        // to fill whatever the fixed columns leave. (The Code column went with
-        // the `code` field.)
-        const wSno = 48;
-        const wUnit = 46;
-        const wRate = 88;
-        const wItem = tableW - wSno - wUnit - wRate;
-        const ITEM_COL = 1; // index of the wrapping column
-        // Each column: [x, width, align], left-to-right.
-        const widths = [ wSno, wItem, wRate, wUnit ];
-        // Every column centered except the Item column, which stays left.
-        const aligns = [ 'center', 'left', 'center', 'center' ];
-        const cols = [];
-        let cx = left;
-        widths.forEach( ( w, i ) => {
-            cols.push( [ cx, w, aligns[ i ] ] );
-            cx += w;
-        } );
-
-        // Title. The wholesale sheet reads simply "Price List"; the retailer
-        // sheet carries a trailing ® so staff can tell the two apart.
-        doc.font( FONT_B ).fontSize( 18 ).fillColor( '#111' )
-            .text(
-                `Price List${ wholesale ? '' : ' ®' }`,
-                left, doc.y, { 'width': tableW, 'align': 'center' }
-            );
-        doc.font( FONT ).fontSize( 9 ).fillColor( '#666' )
-            .text(
-                new Date().toLocaleDateString( 'en-IN', {
-                    'day': '2-digit', 'month': 'short', 'year': 'numeric'
-                } ),
-                left, doc.y + 2, { 'width': tableW, 'align': 'center' }
-            );
-        doc.fillColor( '#000' ).moveDown( 1.2 );
-
-        // Draw one bordered table row.
-        // cells = [sno, item, rate, unit].
-        const drawRow = ( cells, opts = {} ) => {
-            const fontName = opts.bold ? FONT_B : FONT;
-            const size = opts.size || 10;
-            doc.font( fontName ).fontSize( size );
-            const itemH = doc.heightOfString( String( cells[ ITEM_COL ] ), {
-                'width': wItem - PAD * 2
-            } );
-            const rowH = Math.max( opts.minH || 18, itemH + PAD * 2 );
-
-            if ( doc.y + rowH > bottom() ) doc.addPage();
-            const y = doc.y;
-
-            if ( opts.fill ) {
-                doc.rect( left, y, tableW, rowH ).fill( opts.fill );
-            }
-            // Column separators + outer border.
-            doc.lineWidth( 0.5 ).strokeColor( '#d1d5db' );
-            cols.forEach( ( [ x ] ) => {
-                doc.moveTo( x, y ).lineTo( x, y + rowH ).stroke();
-            } );
-            doc.moveTo( right, y ).lineTo( right, y + rowH ).stroke();
-            doc.rect( left, y, tableW, rowH ).stroke();
-
-            const tc = opts.color || '#111';
-            doc.fillColor( tc ).font( fontName ).fontSize( size );
-            cells.forEach( ( val, i ) => {
-                const [ x, w, align ] = cols[ i ];
-                doc.text( String( val ), x + PAD, y + PAD,
-                    { 'width': w - PAD * 2, 'align': align } );
-            } );
-
-            doc.fillColor( '#000' ).y = y + rowH;
-        };
-
-        // A full-width category band.
-        const drawCategoryBand = ( name ) => {
-            const h = 22;
-            if ( doc.y + h + 20 > bottom() ) doc.addPage();
-            const y = doc.y;
-            doc.rect( left, y, tableW, h ).fill( accent );
-            doc.fillColor( '#fff' ).font( FONT_B ).fontSize( 11 )
-                .text( String( name ).toUpperCase(), left + PAD, y + 6,
-                    { 'width': tableW - PAD * 2, 'align': 'center' } );
-            doc.fillColor( '#000' ).y = y + h;
-        };
-
-        groups.forEach( ( group ) => {
-            drawCategoryBand( group.name );
-            // Column header for this category's table.
-            drawRow( [ 'S.NO', 'ITEM', 'RATE', 'UNIT' ], {
-                'bold': true, 'size': 9, 'fill': '#f3f4f6', 'color': '#374151'
-            } );
-            group.items.forEach( ( p, i ) => {
-                drawRow(
-                    [
-                        String( i + 1 ),
-                        p.name || '',
-                        money( rateOf( p ) ),
-                        ( p.mainUnit || '' ).toUpperCase()
-                    ],
-                    { 'fill': i % 2 ? '#fafafa' : null }
-                );
-            } );
-            doc.moveDown( 0.8 );
-        } );
-
-        if ( !groups.length ) {
-            doc.font( FONT ).fontSize( 11 )
-                .text( 'No active products to list.', left, doc.y,
-                    { 'width': tableW, 'align': 'center' } );
-        }
-
-        doc.end();
-        return done;
-    }
-
-    /**
-     * Parse an exported .xlsx and update product prices by _id. Only `mrp`
-     * and `purchasePrice` are touched; a row is matched to a product by its
-     * `_id` column. Invalid rows are reported and skipped.
-     * @param { Buffer } buffer - the uploaded workbook
-     * @param { string } [userId] - the editing admin (stored as updatedBy)
-     * @returns { Promise<{ updated: number, failed: number, errors: Array }> }
-     */
-    async updatePricesFromFile( buffer, userId ) {
-        const wb = new ExcelJS.Workbook();
-        await wb.xlsx.load( buffer );
-        const ws = wb.getWorksheet( 'Products' ) || wb.worksheets[ 0 ];
-        if ( !ws ) {
-            const error = new Error( 'No sheet found in the file.' );
-            error.statusCode = 400;
-            throw error;
-        }
-
-        // Map columns by header name so column order can vary.
-        const colIndex = {};
-        ws.getRow( 1 ).eachCell( ( cell, col ) => {
-            colIndex[ String( cellText( cell.value ) ).trim().toLowerCase() ] = col;
-        } );
-        if ( !colIndex[ '_id' ] ) {
-            const error = new Error( 'The file must include an "_id" column.' );
-            error.statusCode = 400;
-            throw error;
-        }
-        const cellOf = ( row, name ) => {
-            const idx = colIndex[ name.toLowerCase() ];
-            if ( !idx ) return '';
-            return cellText( row.getCell( idx ).value );
-        };
-
-        const operations = [];
-        const errors = [];
-
-        for ( let r = 2; r <= ws.rowCount; r++ ) {
-            const row = ws.getRow( r );
-            const id = String( cellOf( row, '_id' ) ).trim();
-            const rawMrp = cellOf( row, 'mrp' );
-            const rawPurchase = cellOf( row, 'purchasePrice' );
-            const rawAlertQty = cellOf( row, 'stockAlertQty' );
-
-            // Skip blank rows entirely.
-            if ( !id && rawMrp === '' && rawPurchase === '' && rawAlertQty === '' ) continue;
-
-            const rowErrors = [];
-            if ( !id || !mongoose.Types.ObjectId.isValid( id ) ) {
-                rowErrors.push( `invalid _id "${ id }"` );
-            }
-
-            const set = {};
-            if ( rawMrp !== '' && rawMrp !== null && rawMrp !== undefined ) {
-                const mrp = Number( rawMrp );
-                if ( !Number.isFinite( mrp ) || mrp < 0 ) {
-                    rowErrors.push( 'mrp is invalid' );
-                } else {
-                    set.mrp = Number( mrp.toFixed( 2 ) );
-                }
-            }
-            if ( rawPurchase !== '' && rawPurchase !== null && rawPurchase !== undefined ) {
-                const purchasePrice = Number( rawPurchase );
-                if ( !Number.isFinite( purchasePrice ) || purchasePrice < 0 ) {
-                    rowErrors.push( 'purchasePrice is invalid' );
-                } else {
-                    set.purchasePrice = Number( purchasePrice.toFixed( 2 ) );
-                }
-            }
-            if ( rawAlertQty !== '' && rawAlertQty !== null && rawAlertQty !== undefined ) {
-                const stockAlertQty = Number( rawAlertQty );
-                if ( !Number.isInteger( stockAlertQty ) || stockAlertQty < 0 ) {
-                    rowErrors.push( 'stockAlertQty must be a whole number of 0 or more' );
-                } else {
-                    set.stockAlertQty = stockAlertQty;
-                }
-            }
-            if ( !rowErrors.length && Object.keys( set ).length === 0 ) {
-                rowErrors.push( 'no mrp, purchasePrice or stockAlertQty to update' );
-            }
-
-            if ( rowErrors.length ) {
-                errors.push( { 'row': r, 'errors': rowErrors } );
-                continue;
-            }
-
-            if ( userId ) set.updatedBy = userId;
-            operations.push( {
-                'updateOne': {
-                    'filter': { '_id': id },
-                    'update': { '$set': set }
-                }
-            } );
-        }
-
-        let updated = 0;
-        if ( operations.length ) {
-            const result = await this.model.bulkWrite( operations );
-            updated = ( result.modifiedCount || 0 );
-        }
-
-        return { updated, 'failed': errors.length, errors };
-    }
-
-    /**
      * Parse a filled .xlsx template buffer and bulk-create products. Every
      * lookup column (shop, category, company, motherCategory, capacity) is
      * resolved from a name to an id, case-insensitively; invalid rows are
      * reported back and skipped rather than failing the whole import.
+     * The shop column may be filled in once and left blank underneath: a
+     * blank cell inherits the last shop named above it, and if the file never
+     * names one at all, `defaultShopId` (the outlet the upload was made from)
+     * is used.
      * @param { Buffer } buffer - the uploaded workbook
      * @param { string } [userId] - the importing admin (stored as createdBy)
+     * @param { string } [defaultShopId] - shop for rows that name none
      * @returns { Promise<{ created: number, failed: number, errors: Array }> }
      */
-    async importFromTemplate( buffer, userId ) {
+    async importFromTemplate( buffer, userId, defaultShopId ) {
         const wb = new ExcelJS.Workbook();
         await wb.xlsx.load( buffer );
         const ws = wb.getWorksheet( 'Products' ) || wb.worksheets[ 0 ];
         if ( !ws ) {
-            const error = new Error( 'No sheet found in the template.' );
-            error.statusCode = 400;
-            throw error;
+            throw new CalmError(
+                'VALIDATION_ERROR', 'No sheet found in the template.'
+            );
         }
 
         // Name -> _id for every lookup column, matched case-insensitively.
@@ -785,6 +628,25 @@ class ProductService extends CalmService {
         const idMap = ( rows ) => new Map(
             rows.map( ( r ) => [ String( r.name ).trim().toLowerCase(), r._id ] )
         );
+        // Codes already taken, keyed shop|code, so the import can reject a
+        // clash with the same readable message the form gives.
+        const taken = new Set();
+        const coded = await this.model
+            .find( { 'code': { '$type': 'string' } } )
+            .select( 'shop code' ).lean();
+        coded.forEach( ( p ) => {
+            taken.add( `${ String( p.shop ) }|${ String( p.code ).toUpperCase() }` );
+        } );
+
+        // Only honour a default shop that actually exists.
+        let defaultShop;
+        if ( defaultShopId && mongoose.Types.ObjectId.isValid( defaultShopId ) ) {
+            const known = shops.some(
+                ( s ) => String( s._id ) === String( defaultShopId )
+            );
+            if ( known ) defaultShop = new mongoose.Types.ObjectId( defaultShopId );
+        }
+
         const catMap = idMap( categories );
         const shopMap = idMap( shops );
         const companyMap = idMap( companies );
@@ -804,18 +666,31 @@ class ProductService extends CalmService {
 
         const docs = [];
         const errors = [];
+        // The last shop named in the file, carried down to rows that leave the
+        // column blank.
+        let carriedShopName = '';
 
         for ( let r = 2; r <= ws.rowCount; r++ ) {
             const row = ws.getRow( r );
             const name = String( cellOf( row, 'name' ) ).trim();
             const catName = String( cellOf( row, 'category' ) ).trim();
             const shopName = String( cellOf( row, 'shop' ) ).trim();
+            const code = normaliseCode( cellOf( row, 'code' ) );
             const companyName = String( cellOf( row, 'company' ) ).trim();
             const motherCatName = String( cellOf( row, 'motherCategory' ) ).trim();
-            const capacityName = String( cellOf( row, 'capacity' ) ).trim();
+            // 'capacity' is the header older templates carry; accept both.
+            const capacityName = String(
+                cellOf( row, 'measurement' ) || cellOf( row, 'capacity' )
+            ).trim();
 
-            // Skip blank rows entirely.
-            if ( !name && !catName && !shopName ) continue;
+            // Skip blank rows entirely. The shop column is deliberately NOT
+            // part of this test: the template ships with the shop pre-filled
+            // down the sheet, so a row holding nothing but a shop name is an
+            // untouched row, not an incomplete one.
+            if (
+                !name && !code && !catName && !companyName &&
+                !motherCatName && !capacityName
+            ) continue;
 
             // Blank unit cells fall back to the single allowed value, so an
             // older template without these columns still imports.
@@ -848,27 +723,46 @@ class ProductService extends CalmService {
                 else rowErrors.push( `status "${ rawStatus }" must be YES or NO` );
             }
             if ( !name ) rowErrors.push( 'name is required' );
-            const shop = shopMap.get( shopName.toLowerCase() );
-            if ( !shop ) rowErrors.push( `shop "${ shopName }" not found` );
-            const category = catMap.get( catName.toLowerCase() );
-            if ( !category ) rowErrors.push( `category "${ catName }" not found` );
-            // Company is required on the form, so it is required here too.
-            const company = companyMap.get( companyName.toLowerCase() );
-            if ( !company ) rowErrors.push( `company "${ companyName }" not found` );
-            // Mother category and capacity are optional: blank is fine, but a
-            // value that matches nothing is an error rather than a silent drop.
-            let motherCategory;
-            if ( motherCatName ) {
-                motherCategory = motherCatMap.get( motherCatName.toLowerCase() );
-                if ( !motherCategory ) {
-                    rowErrors.push( `motherCategory "${ motherCatName }" not found` );
+            // Every lookup column is required, exactly as on the product
+            // form. A blank cell reports as missing rather than as a failed
+            // lookup of an empty name.
+            // The shop is stated once and inherited by the rows below it.
+            if ( shopName ) carriedShopName = shopName;
+            const effectiveShopName = shopName || carriedShopName;
+            let shop;
+            if ( effectiveShopName ) {
+                shop = shopMap.get( effectiveShopName.toLowerCase() );
+                if ( !shop ) {
+                    rowErrors.push( `shop "${ effectiveShopName }" not found` );
                 }
+            } else if ( defaultShop ) {
+                // Nothing named anywhere above: fall back to the outlet the
+                // upload was made from.
+                shop = defaultShop;
+            } else {
+                rowErrors.push( 'shop is required' );
             }
-            let capacity;
-            if ( capacityName ) {
-                capacity = capacityMap.get( capacityName.toLowerCase() );
-                if ( !capacity ) {
-                    rowErrors.push( `capacity "${ capacityName }" not found` );
+            const category = resolveRequiredRef(
+                'category', catMap, catName, rowErrors
+            );
+            const motherCategory = resolveRequiredRef(
+                'motherCategory', motherCatMap, motherCatName, rowErrors
+            );
+            const company = resolveRequiredRef(
+                'company', companyMap, companyName, rowErrors
+            );
+            const capacity = resolveRequiredRef(
+                'measurement', capacityMap, capacityName, rowErrors
+            );
+            // A code must be free within its shop — checked against the
+            // database AND against the rows already read from this file, since
+            // insertMany would otherwise fail the whole batch on the index.
+            if ( code && shop ) {
+                const key = `${ String( shop ) }|${ code }`;
+                if ( taken.has( key ) ) {
+                    rowErrors.push( `code "${ code }" is already used in this shop` );
+                } else {
+                    taken.add( key );
                 }
             }
             if ( !MAIN_UNITS.includes( mainUnit ) ) {
@@ -897,15 +791,14 @@ class ProductService extends CalmService {
             }
 
             const doc = {
-                name, shop, category, company, mrp, purchasePrice,
-                mainUnit, alternateUnit, perAlternateUnitQty, stockAlertQty,
-                inventory, status,
+                name, shop, category, motherCategory, company, capacity,
+                mrp, purchasePrice, mainUnit, alternateUnit,
+                perAlternateUnitQty, stockAlertQty, inventory, status,
                 'createdBy': userId
             };
-            // Leave the optional refs off entirely when blank; an explicit
-            // undefined would still write a null into the document.
-            if ( motherCategory ) doc.motherCategory = motherCategory;
-            if ( capacity ) doc.capacity = capacity;
+            // Code is the only optional column left. Leave it off entirely
+            // when blank: an explicit undefined would still write a null.
+            if ( code ) doc.code = code;
             docs.push( doc );
         }
 
