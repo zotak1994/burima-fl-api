@@ -1,5 +1,6 @@
 'use strict';
 const { CalmService } = require( '../../../system/core/CalmService' );
+const { assertNotInUse } = require( '../../utils' );
 
 class CompanyService extends CalmService {
     // Setting Global Populate to apply in Get All & Get Single
@@ -60,6 +61,18 @@ class CompanyService extends CalmService {
         }
         const result = await this.model.bulkWrite( operations );
         return { 'data': { 'updated': result.modifiedCount } };
+    }
+
+    /**
+     * Delete, unless products are still filed under this company.
+     * See assertNotInUse: removing it would leave them pointing at nothing.
+     * @param { string } id
+     */
+    async delete( id ) {
+        await assertNotInUse( {
+            id, 'field': 'company', 'label': 'company'
+        } );
+        return super.delete( id );
     }
 }
 

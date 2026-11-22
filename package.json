@@ -9,7 +9,10 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "lint": "eslint .",
     "start": "node index.js",
-    "dev": "node --watch index.js"
+    "dev": "node --watch index.js",
+    "seed": "node scripts/seed-products.js",
+    "opening-stock": "node scripts/opening-stock.js",
+    "verify-stock": "node scripts/verify-stock.js"
   },
   "keywords": [],
   "author": "Sourav Pal",
