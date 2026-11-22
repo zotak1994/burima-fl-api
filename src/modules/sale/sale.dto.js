@@ -9,6 +9,7 @@ class GetDTO {
         this.totalQty = props.totalQty;
         this.totalAmount = props.totalAmount;
         this.netAmount = props.netAmount;
+        this.payment = props.payment;
         this.status = props.status;
         this.confirmedAt = props.confirmedAt;
         this.confirmedBy = props.confirmedBy;
@@ -29,6 +30,7 @@ class InsertDTO {
         this.items = props.items;
         this.totalQty = props.totalQty;
         this.totalAmount = props.totalAmount;
+        this.payment = props.payment;
         // `status` and the confirmation fields stay the service's: a sale is
         // always created as a draft, and confirming has its own endpoint.
         this.createdBy = props.createdBy;
@@ -42,6 +44,7 @@ class UpdateDTO {
         this.items = props.items;
         this.totalQty = props.totalQty;
         this.totalAmount = props.totalAmount;
+        this.payment = props.payment;
         // `netAmount` is the service's own: a bill is its lines added up, so
         // there is nothing for a client to settle.
         // `shop` is deliberately not updatable: moving a sale between outlets

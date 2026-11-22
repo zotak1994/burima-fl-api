@@ -176,16 +176,7 @@ class Purchase {
         }, { 'timestamps': true } );
 
         schema.plugin( uniqueValidator, { 'message': '{PATH} already exists' } );
-        // One invoice number per shop. Entering the same supplier invoice
-        // twice and confirming both would silently double the stock, which is
-        // the single most damaging mistake this screen can make.
-        schema.index(
-            { 'shop': 1, 'invoiceNo': 1 },
-            {
-                'unique': true,
-                'partialFilterExpression': { 'invoiceNo': { '$type': 'string' } }
-            }
-        );
+       
         try {
             mongoose.model( 'purchase', schema );
         } catch ( e ) {

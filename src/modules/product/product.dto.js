@@ -45,7 +45,8 @@ class InsertDTO {
         this.alternateUnit = props.alternateUnit;
         this.perAlternateUnitQty = props.perAlternateUnitQty;
         this.stockAlertQty = props.stockAlertQty;
-        this.inventory = props.inventory;
+        // No inventory: a new product starts at zero. Stock arrives by
+        // confirming a purchase, never by being typed on a form.
         this.displayNumber = props.displayNumber;
         this.status = props.status;
         // Auto Generated Fields
@@ -69,8 +70,8 @@ class UpdateDTO {
         this.alternateUnit = props.alternateUnit;
         this.perAlternateUnitQty = props.perAlternateUnitQty;
         this.stockAlertQty = props.stockAlertQty;
-        // `inventory` is intentionally not updatable: opening stock is set
-        // when the product is created, and stock on hand moves separately.
+        // `inventory` is not updatable either: stock on hand is worked out
+        // from the confirmed purchases and sales, never set by hand.
         this.displayNumber = props.displayNumber;
         this.status = props.status;
         // Auto Generated Fields

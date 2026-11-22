@@ -205,7 +205,10 @@ class StockService extends CalmService {
 
         const totalCount = await Product.countDocuments( filter );
         const products = await Product.find( filter )
-            .select( 'name code mrp purchasePrice inventory stockAlertQty' )
+            .select(
+                'name code mrp purchasePrice inventory stockAlertQty '
+                + 'mainUnit alternateUnit perAlternateUnitQty'
+            )
             .sort( { 'name': 1 } )
             .collation( { 'locale': 'en', 'strength': 2 } )
             .skip( skip )
@@ -230,6 +233,11 @@ class StockService extends CalmService {
                 'product': { '_id': p._id, 'name': p.name, 'code': p.code },
                 'mrp': mrp,
                 'stockAlertQty': p.stockAlertQty,
+                // Bottles per case, so the reader can show the shelf the way
+                // it is stacked. Zero or one means the product is not cased.
+                'perCase': Number( p.perAlternateUnitQty ) || 0,
+                'mainUnit': p.mainUnit,
+                'alternateUnit': p.alternateUnit,
                 // A: what it was holding when the window opened.
                 opening,
                 // B: everything that came in during the window.

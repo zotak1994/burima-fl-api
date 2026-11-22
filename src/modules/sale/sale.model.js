@@ -96,6 +96,17 @@ class Sale {
                 'default': 0,
                 'set': toAmount
             },
+            /**
+             * How the takings came in. Recorded as entered and never
+             * reconciled against netAmount: these are what was counted, and a
+             * difference is something to look at, not something to refuse.
+             */
+            'payment': {
+                'cash': { 'type': Number, 'default': 0, 'set': toAmount },
+                'qr': { 'type': Number, 'default': 0, 'set': toAmount },
+                'card': { 'type': Number, 'default': 0, 'set': toAmount },
+                'expense': { 'type': Number, 'default': 0, 'set': toAmount }
+            },
             'status': {
                 // A draft touches no stock. Confirming is what makes its
                 // lines count against stock.

@@ -4,7 +4,7 @@ const { CalmService } = require( '../../../system/core/CalmService' );
 const { CalmError } = require( '../../../system/core/CalmError' );
 const { stockEngine } = require( '../stock/stock.engine' );
 const {
-    money, normaliseLines, assertNotFutureDate
+    money, clientFigure, normaliseLines, assertNotFutureDate
 } = require( '../stock/stock-lines' );
 
 class SaleService extends CalmService {
@@ -50,6 +50,26 @@ class SaleService extends CalmService {
         } );
     }
 
+    /**
+     * The four takings figures, as entered.
+     *
+     * Validated only for being usable numbers — nothing here is checked
+     * against the bill, because what was counted is what gets recorded.
+     * @param { Object } data - the incoming payload
+     * @returns { Object | undefined } undefined when the client sent none
+     */
+    payment( data ) {
+        if ( !data.payment || typeof data.payment !== 'object' ) {
+            return undefined;
+        }
+        const out = {};
+        [ 'cash', 'qr', 'card', 'expense' ].forEach( ( key ) => {
+            const label = key === 'qr' ? 'QR' : key;
+            out[ key ] = clientFigure( data.payment[ key ], label ) || 0;
+        } );
+        return out;
+    }
+
     /** The bill: the lines added up. */
     bill( totals ) {
         return {
@@ -68,6 +88,8 @@ class SaleService extends CalmService {
         );
         payload.items = totals.items;
         Object.assign( payload, this.bill( totals ) );
+        const paid = this.payment( payload );
+        if ( paid ) payload.payment = paid;
         payload.status = 'draft';
         return super.insert( payload );
     }
@@ -102,6 +124,8 @@ class SaleService extends CalmService {
             payload.items = totals.items;
             Object.assign( payload, this.bill( totals ) );
         }
+        const paid = this.payment( payload );
+        if ( paid ) payload.payment = paid;
 
         if ( current.status !== 'confirmed' ) {
             return super.update( id, payload );

@@ -36,7 +36,9 @@ const TEMPLATE_COLUMNS = [
     { 'header': 'alternateUnit', 'key': 'alternateUnit', 'width': 14 },
     { 'header': 'perAlternateUnitQty', 'key': 'perAlternateUnitQty', 'width': 20 },
     { 'header': 'stockAlertQty', 'key': 'stockAlertQty', 'width': 14 },
-    { 'header': 'inventory', 'key': 'inventory', 'width': 12 },
+    // No 'inventory' column: a new product starts at zero and stock arrives
+    // by confirming a purchase. A column the import ignored would only
+    // invite a figure that silently did nothing.
     { 'header': 'status', 'key': 'status', 'width': 10 }
 ];
 // Accepted spellings for the boolean `status` column, plus the dropdown values.
@@ -47,7 +49,10 @@ const STATUS_FALSE = [ 'NO', 'N', 'FALSE', '0', 'INACTIVE' ];
 // identifies the row unambiguously when comparing an export against the data.
 const EXPORT_COLUMNS = [
     { 'header': '_id', 'key': '_id', 'width': 26 },
-    ...TEMPLATE_COLUMNS
+    ...TEMPLATE_COLUMNS,
+    // Reported, never read back: an export says what is on the shelf today,
+    // and re-importing that file cannot set stock.
+    { 'header': 'inventory', 'key': 'inventory', 'width': 12 }
 ];
 
 /** Normalise an ExcelJS cell value (plain, rich-text, formula, hyperlink). */
@@ -234,13 +239,7 @@ class ProductService extends CalmService {
     async insert( data ) {
         const payload = { ...data };
         const code = normaliseCode( payload.code );
-        if ( code === undefined ) {
-            // Drop the key rather than store '' — see normaliseCode.
-            delete payload.code;
-        } else {
-            payload.code = code;
-            await this.assertCodeFree( payload.shop, code );
-        }
+       
         if ( payload.displayNumber === undefined || payload.displayNumber === null ) {
             const filter = payload.category ? { 'category': payload.category } : {};
             const last = await this.model
@@ -249,29 +248,15 @@ class ProductService extends CalmService {
                 .select( 'displayNumber' );
             payload.displayNumber = last ? ( last.displayNumber || 0 ) + 1 : 1;
         }
+        // A new product starts empty, whatever the client sent. Stock only
+        // arrives by confirming a purchase, which is what the stock figures
+        // are worked out from — a number typed here would be a figure no
+        // document explains, and the next rebuild would wipe it.
+        payload.inventory = 0;
         return super.insert( payload );
     }
 
-    /**
-     * Reject a product code already used by another product in the same shop.
-     * Codes are per shop, so the same code in a different outlet is fine.
-     * @param { * } shop - the owning shop's id
-     * @param { string } code - an already-normalised code
-     * @param { string } [excludeId] - the product being edited, if any
-     */
-    async assertCodeFree( shop, code, excludeId ) {
-        if ( !shop || !code ) return;
-        const filter = { 'shop': shop, 'code': code };
-        if ( excludeId ) filter._id = { '$ne': excludeId };
-        const clash = await this.model.findOne( filter ).select( 'name' ).lean();
-        if ( clash ) {
-            throw new CalmError(
-                'VALIDATION_ERROR',
-                `Code "${ code }" is already used by "${ clash.name }" in this shop.`
-            );
-        }
-    }
-
+  
     /**
      * Normalise the code on the way in, and let an explicitly blank code clear
      * the stored one.
@@ -280,26 +265,6 @@ class ProductService extends CalmService {
      */
     async update( id, data ) {
         const payload = { ...data };
-        if ( 'code' in payload ) {
-            const code = normaliseCode( payload.code );
-            if ( code === undefined ) {
-                // Cleared in the form: remove the field instead of writing ''.
-                // Mongoose merges the plain fields into $set alongside this.
-                delete payload.code;
-                payload.$unset = { ...( payload.$unset || {} ), 'code': 1 };
-            } else {
-                payload.code = code;
-                // The form always restates the shop, but fall back to the
-                // product's own shop so a partial payload still validates.
-                let shop = payload.shop;
-                if ( !shop ) {
-                    const current = await this.model.findById( id )
-                        .select( 'shop' ).lean();
-                    shop = current && current.shop;
-                }
-                await this.assertCodeFree( shop, code, id );
-            }
-        }
         return super.update( id, payload );
     }
 
@@ -474,7 +439,7 @@ class ProductService extends CalmService {
         // Column layout: A shop | B motherCategory | C category |
         // D company | E code | F name | G capacity | H mrp |
         // I purchasePrice | J mainUnit | K alternateUnit |
-        // L perAlternateUnitQty | M stockAlertQty | N inventory | O status.
+        // L perAlternateUnitQty | M stockAlertQty | N status.
         const lastRow = 1000;
         const listValidation = ( name, message ) => ( {
             'type': 'list',
@@ -528,7 +493,7 @@ class ProductService extends CalmService {
             )
         );
         ws.dataValidations.add(
-            `O2:O${ lastRow }`,
+            `N2:N${ lastRow }`,
             listValidation( 'StatusList', 'Status must be YES or NO.' )
         );
 
@@ -628,15 +593,15 @@ class ProductService extends CalmService {
         const idMap = ( rows ) => new Map(
             rows.map( ( r ) => [ String( r.name ).trim().toLowerCase(), r._id ] )
         );
-        // Codes already taken, keyed shop|code, so the import can reject a
-        // clash with the same readable message the form gives.
-        const taken = new Set();
-        const coded = await this.model
-            .find( { 'code': { '$type': 'string' } } )
-            .select( 'shop code' ).lean();
-        coded.forEach( ( p ) => {
-            taken.add( `${ String( p.shop ) }|${ String( p.code ).toUpperCase() }` );
-        } );
+        // // Codes already taken, keyed shop|code, so the import can reject a
+        // // clash with the same readable message the form gives.
+        // const taken = new Set();
+        // const coded = await this.model
+        //     .find( { 'code': { '$type': 'string' } } )
+        //     .select( 'shop code' ).lean();
+        // coded.forEach( ( p ) => {
+        //     taken.add( `${ String( p.shop ) }|${ String( p.code ).toUpperCase() }` );
+        // } );
 
         // Only honour a default shop that actually exists.
         let defaultShop;
@@ -709,8 +674,6 @@ class ProductService extends CalmService {
             // Low-stock threshold and opening stock both default to 0.
             const rawAlertQty = String( cellOf( row, 'stockAlertQty' ) ).trim();
             const stockAlertQty = rawAlertQty === '' ? 0 : Number( rawAlertQty );
-            const rawInventory = String( cellOf( row, 'inventory' ) ).trim();
-            const inventory = rawInventory === '' ? 0 : Number( rawInventory );
             // Active unless the row says otherwise, so a template without the
             // status column (or with it left blank) still imports.
             const rawStatus = String( cellOf( row, 'status' ) ).trim().toUpperCase();
@@ -754,17 +717,7 @@ class ProductService extends CalmService {
             const capacity = resolveRequiredRef(
                 'measurement', capacityMap, capacityName, rowErrors
             );
-            // A code must be free within its shop — checked against the
-            // database AND against the rows already read from this file, since
-            // insertMany would otherwise fail the whole batch on the index.
-            if ( code && shop ) {
-                const key = `${ String( shop ) }|${ code }`;
-                if ( taken.has( key ) ) {
-                    rowErrors.push( `code "${ code }" is already used in this shop` );
-                } else {
-                    taken.add( key );
-                }
-            }
+           
             if ( !MAIN_UNITS.includes( mainUnit ) ) {
                 rowErrors.push( `mainUnit "${ mainUnit }" is invalid` );
             }
@@ -781,9 +734,6 @@ class ProductService extends CalmService {
             if ( !Number.isInteger( stockAlertQty ) || stockAlertQty < 0 ) {
                 rowErrors.push( 'stockAlertQty must be a whole number of 0 or more' );
             }
-            if ( !Number.isInteger( inventory ) || inventory < 0 ) {
-                rowErrors.push( 'inventory must be a whole number of 0 or more' );
-            }
 
             if ( rowErrors.length ) {
                 errors.push( { 'row': r, 'errors': rowErrors } );
@@ -793,7 +743,11 @@ class ProductService extends CalmService {
             const doc = {
                 name, shop, category, motherCategory, company, capacity,
                 mrp, purchasePrice, mainUnit, alternateUnit,
-                perAlternateUnitQty, stockAlertQty, inventory, status,
+                perAlternateUnitQty, stockAlertQty, status,
+                // Always empty: an imported product starts at zero and stock
+                // arrives by confirming a purchase. A figure in the file
+                // would be stock no document explains.
+                'inventory': 0,
                 'createdBy': userId
             };
             // Code is the only optional column left. Leave it off entirely

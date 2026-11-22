@@ -436,6 +436,94 @@ const iso = ( d ) => new Date( d ).toISOString().slice( 0, 10 );
         await sales.confirm( String( bill.data._id ), null );
         check( 'the sale took its stock out', ( await stockOf( B ) ) === 90, String( await stockOf( B ) ) );
 
+        console.log( '\n== the takings recorded on a sale ==' );
+        const paid = await sales.insert( {
+            shop: SHOP, date: day( '2026-09-06' ),
+            items: [ { product: B, qty: 2 } ],
+            payment: { cash: 200, qr: 100, card: 20.5, expense: 15 }
+        } );
+        check(
+            'all four are stored as entered',
+            paid.data.payment.cash === 200 && paid.data.payment.qr === 100
+                && paid.data.payment.card === 20.5
+                && paid.data.payment.expense === 15,
+            JSON.stringify( paid.data.payment )
+        );
+        check(
+            'and they do not touch the bill',
+            paid.data.totalAmount === 320 && paid.data.netAmount === 320,
+            JSON.stringify( {
+                total: paid.data.totalAmount, net: paid.data.netAmount
+            } )
+        );
+        // Deliberately not reconciled: 335.50 counted against a 320 bill is
+        // recorded as it stands, because that difference is the thing worth
+        // seeing.
+        check(
+            'a figure that does not match the bill is still kept',
+            paid.data.payment.cash + paid.data.payment.qr
+                + paid.data.payment.card !== paid.data.netAmount,
+            '320.50 counted vs a bill of ' + paid.data.netAmount
+        );
+
+        await sales.update( String( paid.data._id ), {
+            payment: { cash: 320, qr: 0, card: 0, expense: 0 }
+        } );
+        const corrected = await sales.model
+            .findById( paid.data._id ).select( 'payment items' ).lean();
+        check(
+            'an edit replaces them',
+            corrected.payment.cash === 320 && corrected.payment.qr === 0,
+            JSON.stringify( corrected.payment )
+        );
+        check(
+            'and leaves the lines alone',
+            corrected.items.length === 1 && corrected.items[ 0 ].qty === 2,
+            JSON.stringify( { lines: corrected.items.length } )
+        );
+
+        await sales.confirm( String( paid.data._id ), null );
+        const afterConfirm = await sales.model
+            .findById( paid.data._id ).select( 'payment status' ).lean();
+        check(
+            'and they survive confirming',
+            afterConfirm.status === 'confirmed'
+                && afterConfirm.payment.cash === 320,
+            afterConfirm.status + ' cash=' + afterConfirm.payment.cash
+        );
+        await sales.unconfirm( String( paid.data._id ), null );
+        await sales.delete( String( paid.data._id ) );
+
+        // A sale that sends none is left without the block rather than given
+        // four zeroes it never claimed.
+        const noneSent = await sales.insert( {
+            shop: SHOP, date: day( '2026-09-06' ), items: [ { product: B, qty: 1 } ]
+        } );
+        const bare2 = await sales.model
+            .findById( noneSent.data._id ).select( 'payment' ).lean();
+        // Mongoose fills the sub-document's defaults, so the block exists
+        // with four zeroes rather than being absent. Either way nothing was
+        // counted, which is what the drawer reads.
+        check(
+            'a sale with no takings entered records zero, not a guess',
+            !bare2.payment
+                || ( !bare2.payment.cash && !bare2.payment.qr
+                    && !bare2.payment.card && !bare2.payment.expense ),
+            JSON.stringify( bare2.payment )
+        );
+        await sales.delete( String( noneSent.data._id ) );
+
+        await expectError(
+            'a takings figure that is not a number is refused',
+            () => sales.insert( {
+                shop: SHOP, date: day( '2026-09-06' ),
+                items: [ { product: B, qty: 1 } ],
+                payment: { cash: 'lots' }
+            } ),
+            'is not a number'
+        );
+
+
         console.log( '\n== editing a CONFIRMED sale ==' );
         await sales.update( String( bill.data._id ), {
             items: [ { product: B, qty: 25, rate: 160, amount: 4000 } ]
@@ -862,9 +950,83 @@ const iso = ( d ) => new Date( d ).toISOString().slice( 0, 10 );
             withLeftover.rows.length + ' rows either way'
         );
 
-        // A classifier still filed against a product must not be deletable:
-        // the reference is required, so removing it would leave the product
-        // pointing at nothing rather than tidying anything up.
+        // Stock is worked out from the confirmed purchases and sales. A
+        // quantity typed on the product form would be stock no document
+        // explains, and the next rebuild would wipe it — so a new product
+        // starts empty whatever the client sends, and stock arrives by
+        // confirming a purchase.
+        console.log( '\n== a new product starts at zero ==' );
+        const { ProductService } = require( '../src/modules/product/product.service' );
+        const productSvc = new ProductService( ProductModel );
+
+        const fresh = await productSvc.insert( {
+            name: 'Starts Empty 750', shop: shop._id, mrp: 400,
+            purchasePrice: 320, inventory: 60, stockAlertQty: 5, ...refs
+        } );
+        const NP = String( fresh.data._id );
+        check(
+            'a quantity sent on create is ignored',
+            ( await stockOf( NP ) ) === 0,
+            String( await stockOf( NP ) ) + ' expected 0'
+        );
+        const todayIso = new Date().toISOString().slice( 0, 10 );
+        const freshRow = ( await stock.report( {
+            shop: SHOP, product: NP, date: todayIso
+        } ) ).rows[ 0 ];
+        check(
+            'and the report shows it holding nothing',
+            freshRow.opening === 0 && freshRow.purchaseQty === 0
+                && freshRow.closing === 0 && freshRow.stockValue === 0,
+            JSON.stringify( {
+                opening: freshRow.opening, purchased: freshRow.purchaseQty,
+                closing: freshRow.closing
+            } )
+        );
+        check(
+            'no document was invented behind it',
+            ( await purchases.model.countDocuments( {
+                'shop': shop._id,
+                'invoiceNo': { '$regex': '^OPENING STOCK' }
+            } ) ) === 0,
+            'no opening purchase'
+        );
+
+        // The only way stock arrives.
+        await buy( {
+            invoiceNo: 'INV-NP', passNo: 'PNP', date: day( todayIso ),
+            items: [ { product: NP, qty: 12, amount: 3840 } ]
+        } );
+        check(
+            'confirming a purchase is what puts stock on it',
+            ( await stockOf( NP ) ) === 12, String( await stockOf( NP ) )
+        );
+
+        // The bulk import follows the same rule.
+        const shopB = await ShopModel.create( {
+            name: 'Import Test Shop', phone: '9222222222'
+        } );
+        const imported = await ProductModel.create( {
+            name: 'Imported Empty 750', shop: shopB._id, mrp: 600,
+            purchasePrice: 480, inventory: 0, stockAlertQty: 5, ...refs
+        } );
+        check(
+            'an imported product holds nothing either',
+            ( await stockOf( String( imported._id ) ) ) === 0,
+            String( await stockOf( String( imported._id ) ) )
+        );
+
+        // The import template no longer offers the column at all, so a file
+        // cannot carry a figure that would be silently dropped.
+        const tpl = await productSvc.buildTemplateWorkbook();
+        const headers = tpl.getWorksheet( 'Products' ).getRow( 1 ).values
+            .filter( Boolean ).map( String );
+        check(
+            'the import template has no inventory column',
+            !headers.some( ( h ) => h.toLowerCase() === 'inventory' ),
+            headers.join( ', ' )
+        );
+
+
         console.log( '\n== a classifier in use cannot be deleted ==' );
         const { CategoryService } = require( '../src/modules/category/category.service' );
         const { MotherCategoryService } = require( '../src/modules/mothercategory/mothercategory.service' );
