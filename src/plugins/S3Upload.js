@@ -2,6 +2,7 @@
 const { S3Client, DeleteObjectCommand, PutObjectCommand } = require('@aws-sdk/client-s3');
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 const { v4: uuid } = require('uuid');
+const dayjs = require('../utils/day');
 
 class S3Upload {
     constructor() {
@@ -24,7 +25,7 @@ class S3Upload {
     async uploadFile(buffer, fileName, ops = { ACL: 'public-read' }) {
         try {
             const fileType = fileName.split('.').pop();
-            let Key = `${new Date().getFullYear()}/${(`0${new Date().getMonth() + 1}`).slice(-2)}/${uuid()}.${fileType}`;
+            let Key = `${dayjs().format('YYYY')}/${dayjs().format('MM')}/${uuid()}.${fileType}`;
 
             if (ops.pathPrefix) {
                 Key = `${ops.pathPrefix}/${Key}`;
@@ -52,7 +53,7 @@ class S3Upload {
    */
     async getPresignedUploadUrl(fileName, ops = { ACL: 'public-read', expiresIn: 600 }) {
         const fileType = fileName.split('.').pop();
-        let Key = `${new Date().getFullYear()}/${(`0${new Date().getMonth() + 1}`).slice(-2)}/${uuid()}.${fileType}`;
+        let Key = `${dayjs().format('YYYY')}/${dayjs().format('MM')}/${uuid()}.${fileType}`;
         if (ops.pathPrefix) {
             Key = `${ops.pathPrefix}/${Key}`;
         }

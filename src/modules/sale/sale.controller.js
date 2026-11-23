@@ -17,6 +17,29 @@ class SaleController extends CalmController {
     }
 
     /**
+     * GET /sales/report
+     * Sales grouped by product over a date range: item, qty, amount.
+     * The window's totals and bounds ride in metaData, since the envelope
+     * only passes through the keys it knows.
+     */
+    async report( req, res, next ) {
+        try {
+            const result = await this.service.salesReport( req.query );
+            res.sendCalmResponse( result.rows, {
+                'totalCount': result.totalCount,
+                'hasNext': result.hasNext,
+                'metaData': {
+                    'from': result.from,
+                    'to': result.to,
+                    'totals': result.totals
+                }
+            } );
+        } catch ( e ) {
+            next( e );
+        }
+    }
+
+    /**
      * PUT /sales/:id/confirm
      * Confirms a draft sale: each line's qty leaves its product's
      * stock. Refused rather than applied twice on a second call, and refused

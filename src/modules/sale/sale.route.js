@@ -11,7 +11,8 @@ const router = express.Router();
 router.use( AuthController.checkLogin );
 
 router.get( '/', SaleController.getAll );
-// NOTE: declared before '/:id' so neither is ever read as an id.
+// Named routes before '/:id' so none is ever read as an id.
+router.get( '/report', SaleController.report );
 router.put( '/:id/confirm', SaleController.confirm );
 router.put( '/:id/unconfirm', SaleController.unconfirm );
 router.get( '/:id', SaleController.get );

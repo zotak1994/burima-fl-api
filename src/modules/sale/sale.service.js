@@ -1,11 +1,43 @@
 'use strict';
 const mongoose = require( 'mongoose' );
+const dayjs = require( '../../utils/day' );
 const { CalmService } = require( '../../../system/core/CalmService' );
 const { CalmError } = require( '../../../system/core/CalmError' );
-const { stockEngine } = require( '../stock/stock.engine' );
+const {
+    stockEngine, startOfDay, endOfDayExclusive, money: round2
+} = require( '../stock/stock.engine' );
 const {
     money, clientFigure, normaliseLines, assertNotFutureDate
 } = require( '../stock/stock-lines' );
+
+const asId = ( v ) => new mongoose.Types.ObjectId( String( v ) );
+
+/**
+ * Read the window a report asks for — both ends inclusive calendar days, the
+ * same contract the stock report uses. `?date=` is the single-day shorthand.
+ * @param { Object } query
+ * @returns { { from: Date, to: Date } }
+ */
+function readRange( query ) {
+    if ( !query.from && !query.to && !query.date ) {
+        throw new CalmError(
+            'VALIDATION_ERROR',
+            'A sales report needs a date range: send from and to, or date.'
+        );
+    }
+    if ( query.date ) {
+        const day = startOfDay( query.date );
+        return { 'from': day, 'to': day };
+    }
+    const from = startOfDay( query.from || query.to );
+    const to = startOfDay( query.to || query.from );
+    if ( to < from ) {
+        throw new CalmError(
+            'VALIDATION_ERROR', 'The sales range ends before it starts.'
+        );
+    }
+    return { from, to };
+}
 
 class SaleService extends CalmService {
     // Setting Global Populate to apply in Get All & Get Single
@@ -76,6 +108,103 @@ class SaleService extends CalmService {
             'totalQty': totals.totalQty,
             'totalAmount': totals.totalAmount,
             'netAmount': money( totals.totalAmount )
+        };
+    }
+
+    /**
+     * Sales grouped by product over a date range: what sold, how many, and
+     * for how much.
+     *
+     * Only confirmed sales count — a draft has not happened. The figures come
+     * from the lines themselves (name snapshotted at the time of sale, amount
+     * as billed), so a renamed or deleted product still reports correctly.
+     * @param { Object } query - shop, from, to | date, search, limit, skip
+     * @returns { Promise<Object> } rows plus the window's totals
+     */
+    async salesReport( query ) {
+        if ( !query.shop ) {
+            throw new CalmError(
+                'VALIDATION_ERROR', 'A sales report needs a shop.'
+            );
+        }
+        const { from, to } = readRange( query );
+        const shop = asId( query.shop );
+        const skip = query.skip ? Number( query.skip ) : 0;
+        const limit = query.limit ? Number( query.limit ) : 500;
+
+        const grouped = await this.model.aggregate( [
+            {
+                '$match': {
+                    'shop': shop,
+                    'status': 'confirmed',
+                    'date': { '$gte': from, '$lt': endOfDayExclusive( to ) }
+                }
+            },
+            { '$unwind': '$items' },
+            {
+                '$group': {
+                    '_id': '$items.product',
+                    'name': { '$first': '$items.name' },
+                    'qty': { '$sum': '$items.qty' },
+                    'amount': { '$sum': '$items.amount' }
+                }
+            },
+            // Biggest sellers by value first — what a sales report is read for.
+            { '$sort': { 'amount': -1, 'name': 1 } }
+        ] );
+
+        // The product name may not have been snapshotted on an old line, so
+        // fill any gap from the catalogue rather than show a blank.
+        const missing = grouped
+            .filter( ( r ) => !r.name && r._id )
+            .map( ( r ) => r._id );
+        let byId = new Map();
+        if ( missing.length ) {
+            const found = await mongoose.model( 'product' )
+                .find( { '_id': { '$in': missing } } )
+                .select( 'name code' ).lean();
+            byId = new Map( found.map( ( p ) => [ String( p._id ), p ] ) );
+        }
+
+        let rows = grouped.map( ( r ) => {
+            const fromDb = byId.get( String( r._id ) );
+            return {
+                'product': r._id,
+                'name': r.name || ( fromDb && fromDb.name ) || '—',
+                'code': fromDb && fromDb.code,
+                'qty': r.qty,
+                'amount': round2( r.amount )
+            };
+        } );
+
+        // A plain name search over the grouped rows, so the report can be
+        // narrowed to one product without another query.
+        if ( query.search ) {
+            const term = String( query.search ).trim().toLowerCase();
+            if ( term ) {
+                rows = rows.filter(
+                    ( r ) => r.name.toLowerCase().includes( term )
+                        || ( r.code && String( r.code ).toLowerCase().includes( term ) )
+                );
+            }
+        }
+
+        const totals = rows.reduce(
+            ( acc, r ) => ( {
+                'qty': acc.qty + r.qty,
+                'amount': round2( acc.amount + r.amount )
+            } ),
+            { 'qty': 0, 'amount': 0 }
+        );
+        const totalCount = rows.length;
+
+        return {
+            'from': from,
+            'to': to,
+            'rows': rows.slice( skip, skip + limit ),
+            'totalCount': totalCount,
+            'hasNext': skip + limit < totalCount,
+            'totals': totals
         };
     }
 
@@ -232,7 +361,7 @@ class SaleService extends CalmService {
                     {
                         '$set': {
                             'status': 'confirmed',
-                            'confirmedAt': new Date(),
+                            'confirmedAt': dayjs().toDate(),
                             'confirmedBy': userId
                         }
                     },

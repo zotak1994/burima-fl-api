@@ -1,11 +1,11 @@
 'use strict';
 const mongoose = require( 'mongoose' );
+const dayjs = require( '../../utils/day' );
 const { CalmService } = require( '../../../system/core/CalmService' );
 const { CalmError } = require( '../../../system/core/CalmError' );
 const { stockEngine, startOfDay, money } = require( './stock.engine' );
 
 const asId = ( v ) => new mongoose.Types.ObjectId( String( v ) );
-const DAY = 24 * 60 * 60 * 1000;
 
 /** Group a document's own `date` down to its UTC day inside a pipeline. */
 const DAY_EXPR = {
@@ -47,7 +47,7 @@ function readRange( query ) {
 
 /** An inclusive day range as the exclusive-upper bound a query needs. */
 const matchRange = ( from, to ) => ( {
-    '$gte': from, '$lt': new Date( to.getTime() + DAY )
+    '$gte': from, '$lt': dayjs.utc( to ).add( 1, 'day' ).toDate()
 } );
 
 /**
@@ -559,7 +559,9 @@ class StockService extends CalmService {
             } );
             return {
                 'products': products.length,
-                'days': [ ...new Set( days.map( ( d ) => d.getTime() ) ) ].length,
+                'days': [ ...new Set(
+                    days.map( ( d ) => dayjs.utc( d ).valueOf() )
+                ) ].length,
                 'onHand': [ ...onHand.entries() ]
                     .filter( ( [ , v ] ) => v !== 0 )
                     .map( ( [ product, qty ] ) => ( { product, qty } ) )

@@ -1,4 +1,5 @@
 'use strict';
+const dayjs = require( '../../utils/day' );
 const { CalmController } = require( '../../../system/core/CalmController' );
 const { CalmError } = require( '../../../system/core/CalmError' );
 const { ProductService } = require( './product.service' );
@@ -11,9 +12,7 @@ const autoBind = require( 'auto-bind' ),
 
 /** Filesystem-safe local date for download filenames, e.g. 2026-11-14. */
 function fileStamp() {
-    const d = new Date();
-    const p = ( n ) => String( n ).padStart( 2, '0' );
-    return `${ d.getFullYear() }-${ p( d.getMonth() + 1 ) }-${ p( d.getDate() ) }`;
+    return dayjs().format( 'YYYY-MM-DD' );
 }
 
 /**

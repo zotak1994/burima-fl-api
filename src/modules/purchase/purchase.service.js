@@ -1,5 +1,6 @@
 'use strict';
 const mongoose = require( 'mongoose' );
+const dayjs = require( '../../utils/day' );
 const { CalmService } = require( '../../../system/core/CalmService' );
 const { CalmError } = require( '../../../system/core/CalmError' );
 const { stockEngine } = require( '../stock/stock.engine' );
@@ -271,7 +272,7 @@ class PurchaseService extends CalmService {
                     {
                         '$set': {
                             'status': 'confirmed',
-                            'confirmedAt': new Date(),
+                            'confirmedAt': dayjs().toDate(),
                             'confirmedBy': userId
                         }
                     },

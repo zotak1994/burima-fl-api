@@ -31,6 +31,7 @@
 const path = require( 'path' );
 require( 'dotenv' ).config( { 'path': path.join( __dirname, '..', '.env' ) } );
 const mongoose = require( 'mongoose' );
+const dayjs = require( '../src/utils/day' );
 const dns = require( 'node:dns' );
 
 /**
@@ -67,13 +68,11 @@ const OPENING_INVOICE = 'OPENING STOCK';
 /** The date to stamp the opening purchase with, as UTC midnight. */
 function openingDate() {
     const raw = val( '--date' );
-    const when = raw ? new Date( raw ) : new Date();
-    if ( Number.isNaN( when.getTime() ) ) {
+    const when = raw ? dayjs.utc( raw ) : dayjs.utc();
+    if ( !when.isValid() ) {
         throw new Error( `--date is not a date: ${ raw }` );
     }
-    return new Date( Date.UTC(
-        when.getUTCFullYear(), when.getUTCMonth(), when.getUTCDate()
-    ) );
+    return when.startOf( 'day' ).toDate();
 }
 
 const money = ( n ) => Math.round( ( Number( n ) || 0 ) * 100 ) / 100;
@@ -207,7 +206,7 @@ async function main() {
             'roundOff': money( Math.round( totalAmount ) - totalAmount ),
             'netAmount': money( Math.round( totalAmount ) ),
             'status': 'confirmed',
-            'confirmedAt': new Date()
+            'confirmedAt': dayjs().toDate()
         };
 
         if ( existing ) {

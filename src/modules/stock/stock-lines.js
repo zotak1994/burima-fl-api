@@ -1,5 +1,6 @@
 'use strict';
 const mongoose = require( 'mongoose' );
+const dayjs = require( '../../utils/day' );
 const { CalmError } = require( '../../../system/core/CalmError' );
 
 /** Round to 2dp the same way the amount setter does. */
@@ -157,12 +158,14 @@ async function normaliseLines( { items, shopId, totals = {}, fallbackRate } ) {
  */
 function assertNotFutureDate( value, label = 'purchase' ) {
     if ( value === undefined || value === null || value === '' ) return;
-    const when = new Date( value );
-    if ( Number.isNaN( when.getTime() ) ) {
+    // Parsed in UTC so a 'YYYY-MM-DD' value is midnight UTC — the whole
+    // reason the slack below is fourteen hours and not zero.
+    const when = dayjs.utc( value );
+    if ( !when.isValid() ) {
         throw new CalmError( 'VALIDATION_ERROR', 'Date is not a valid date.' );
     }
-    const limit = new Date( Date.now() + ( 14 * 60 * 60 * 1000 ) );
-    if ( when.getTime() > limit.getTime() ) {
+    const limit = dayjs().add( 14, 'hour' );
+    if ( when.isAfter( limit ) ) {
         throw new CalmError(
             'VALIDATION_ERROR', `A ${ label } cannot be dated in the future.`
         );

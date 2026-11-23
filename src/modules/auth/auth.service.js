@@ -2,6 +2,7 @@
 const { UserService } = require( '../user/user.service' );
 const autoBind = require( 'auto-bind' );
 const mongoose = require( 'mongoose' );
+const dayjs = require( '../../utils/day' );
 const { CalmError } = require('../../../system/core/CalmError');
 
 class AuthService {
@@ -140,9 +141,7 @@ class AuthService {
             const { data } = await this.userService.findByEmail( email );
             const otp = this.getRandomInt( 111111, 999999 );
             data.otp = otp;
-            const expiry = new Date();
-            expiry.setMinutes( expiry.getMinutes() + 30 );
-            data.otpExpiry = expiry;
+            data.otpExpiry = dayjs().add( 30, 'minute' ).toDate();
             data.save();
             return { otp };
         } catch ( e ) {
@@ -156,7 +155,7 @@ class AuthService {
             if( data.otp !== otp ) {
                 throw new CalmError('VALIDATION_ERROR', 'Invalid OTP');
             }
-            if( data.otpExpiry < new Date() ) {
+            if( dayjs().isAfter( data.otpExpiry ) ) {
                 throw new CalmError('VALIDATION_ERROR', 'OTP Expired');
             }
             data.otp = '';

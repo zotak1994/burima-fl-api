@@ -1,9 +1,8 @@
 'use strict';
 const mongoose = require( 'mongoose' );
+const dayjs = require( '../../utils/day' );
 const { CalmError } = require( '../../../system/core/CalmError' );
 const { StockSnapshot } = require( './stock.model' );
-
-const DAY = 24 * 60 * 60 * 1000;
 
 /** Round to 2dp, the way every amount in this codebase is rounded. */
 function money( n ) {
@@ -17,22 +16,20 @@ function money( n ) {
  * @returns { Date }
  */
 function startOfDay( value ) {
-    const when = value instanceof Date ? value : new Date( value );
-    if ( Number.isNaN( when.getTime() ) ) {
+    const when = dayjs.utc( value );
+    if ( !when.isValid() ) {
         throw new CalmError( 'VALIDATION_ERROR', 'Stock date is not a date.' );
     }
-    return new Date( Date.UTC(
-        when.getUTCFullYear(), when.getUTCMonth(), when.getUTCDate()
-    ) );
+    return when.startOf( 'day' ).toDate();
 }
 
 /** The day after the one `value` falls in, for an exclusive upper bound. */
 function endOfDayExclusive( value ) {
-    return new Date( startOfDay( value ).getTime() + DAY );
+    return dayjs.utc( startOfDay( value ) ).add( 1, 'day' ).toDate();
 }
 
 const asId = ( v ) => new mongoose.Types.ObjectId( String( v ) );
-const key = ( product, date ) => `${ product }|${ date.getTime() }`;
+const key = ( product, date ) => `${ product }|${ dayjs.utc( date ).valueOf() }`;
 
 /**
  * Group a document's own `date` field down to its UTC day, inside an
@@ -99,7 +96,7 @@ class StockEngine {
             ( days || [] )
                 .filter( ( d ) => d !== undefined && d !== null && d !== '' )
                 .map( startOfDay )
-                .map( ( d ) => [ d.getTime(), d ] )
+                .map( ( d ) => [ dayjs.utc( d ).valueOf(), d ] )
         ).values() ];
 
         if ( dayList.length ) {
@@ -153,7 +150,7 @@ class StockEngine {
      */
     async movementOn( shopId, productIds, dayList, session ) {
         const onOneOfTheDays = dayList.map( ( d ) => ( {
-            'date': { '$gte': d, '$lt': new Date( d.getTime() + DAY ) }
+            'date': { '$gte': d, '$lt': dayjs.utc( d ).add( 1, 'day' ).toDate() }
         } ) );
 
         const pipeline = ( ) => [
