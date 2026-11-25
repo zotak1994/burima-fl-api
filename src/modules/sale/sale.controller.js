@@ -40,6 +40,28 @@ class SaleController extends CalmController {
     }
 
     /**
+     * GET /sales/summary
+     * Sales rolled up per day over a date range: bottles, amount, and the
+     * takings split (QR, card, expense, cash). Totals and bounds in metaData.
+     */
+    async summary( req, res, next ) {
+        try {
+            const result = await this.service.salesSummary( req.query );
+            res.sendCalmResponse( result.rows, {
+                'totalCount': result.totalCount,
+                'hasNext': result.hasNext,
+                'metaData': {
+                    'from': result.from,
+                    'to': result.to,
+                    'totals': result.totals
+                }
+            } );
+        } catch ( e ) {
+            next( e );
+        }
+    }
+
+    /**
      * PUT /sales/:id/confirm
      * Confirms a draft sale: each line's qty leaves its product's
      * stock. Refused rather than applied twice on a second call, and refused

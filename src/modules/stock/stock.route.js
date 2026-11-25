@@ -8,6 +8,7 @@ const router = express.Router();
 router.use( AuthController.checkLogin );
 
 // Named routes first, so none of them is ever read as an id.
+router.get( '/excise-report', StockController.exciseReport );
 router.get( '/totals', StockController.totals );
 router.get( '/movements', StockController.movements );
 router.post( '/rebuild', StockController.rebuild );

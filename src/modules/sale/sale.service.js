@@ -208,6 +208,104 @@ class SaleService extends CalmService {
         };
     }
 
+    /**
+     * Sales rolled up per calendar day over a range: how many bottles went
+     * out, for how much, and how the takings split across QR, card, expense
+     * and cash. One row per day that had a confirmed sale, oldest first.
+     *
+     * Quantities and amounts are summed from the lines; the takings are summed
+     * from each sale's single payment, so a sale with many lines still counts
+     * its payment once. Days are read in UTC, matching the stock report.
+     * @param { Object } query
+     */
+    async salesSummary( query ) {
+        if ( !query.shop ) {
+            throw new CalmError(
+                'VALIDATION_ERROR', 'A sales summary needs a shop.'
+            );
+        }
+        const { from, to } = readRange( query );
+        const shop = asId( query.shop );
+        const skip = query.skip ? Number( query.skip ) : 0;
+        const limit = query.limit ? Number( query.limit ) : 500;
+        const utc = { 'timezone': 'UTC' };
+
+        const grouped = await this.model.aggregate( [
+            {
+                '$match': {
+                    'shop': shop,
+                    'status': 'confirmed',
+                    'date': { '$gte': from, '$lt': endOfDayExclusive( to ) }
+                }
+            },
+            // Per-sale figures first: line totals from the items, takings from
+            // the one payment, so unwinding never multiplies the takings.
+            {
+                '$project': {
+                    'y': { '$year': { 'date': '$date', ...utc } },
+                    'm': { '$month': { 'date': '$date', ...utc } },
+                    'd': { '$dayOfMonth': { 'date': '$date', ...utc } },
+                    'bottles': { '$sum': '$items.qty' },
+                    'amount': { '$sum': '$items.amount' },
+                    'cash': { '$ifNull': [ '$payment.cash', 0 ] },
+                    'qr': { '$ifNull': [ '$payment.qr', 0 ] },
+                    'card': { '$ifNull': [ '$payment.card', 0 ] },
+                    'expense': { '$ifNull': [ '$payment.expense', 0 ] }
+                }
+            },
+            {
+                '$group': {
+                    '_id': { 'y': '$y', 'm': '$m', 'd': '$d' },
+                    'bottles': { '$sum': '$bottles' },
+                    'amount': { '$sum': '$amount' },
+                    'cash': { '$sum': '$cash' },
+                    'qr': { '$sum': '$qr' },
+                    'card': { '$sum': '$card' },
+                    'expense': { '$sum': '$expense' }
+                }
+            },
+            { '$sort': { '_id.y': 1, '_id.m': 1, '_id.d': 1 } }
+        ] );
+
+        const pad = ( n ) => String( n ).padStart( 2, '0' );
+        const rows = grouped.map( ( r ) => ( {
+            'date': dayjs.utc(
+                `${ r._id.y }-${ pad( r._id.m ) }-${ pad( r._id.d ) }`
+            ).toDate(),
+            'bottles': r.bottles,
+            'amount': round2( r.amount ),
+            'qr': round2( r.qr ),
+            'card': round2( r.card ),
+            'expense': round2( r.expense ),
+            'cash': round2( r.cash )
+        } ) );
+
+        const totals = rows.reduce(
+            ( acc, r ) => ( {
+                'bottles': acc.bottles + r.bottles,
+                'amount': round2( acc.amount + r.amount ),
+                'qr': round2( acc.qr + r.qr ),
+                'card': round2( acc.card + r.card ),
+                'expense': round2( acc.expense + r.expense ),
+                'cash': round2( acc.cash + r.cash )
+            } ),
+            {
+                'bottles': 0, 'amount': 0, 'qr': 0,
+                'card': 0, 'expense': 0, 'cash': 0
+            }
+        );
+        const totalCount = rows.length;
+
+        return {
+            'from': from,
+            'to': to,
+            'rows': rows.slice( skip, skip + limit ),
+            'totalCount': totalCount,
+            'hasNext': skip + limit < totalCount,
+            'totals': totals
+        };
+    }
+
     /** Create a sale. Always a draft — no stock leaves yet. */
     async insert( data ) {
         const payload = { ...data };

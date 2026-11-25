@@ -206,9 +206,10 @@ function buildProducts( { count, prefix, shopId, ids, startIndex } ) {
             'alternateUnit': 'CASE',
             'perAlternateUnitQty': shape.perCase,
             'stockAlertQty': shape.perCase,
-            // Some products deliberately land at or below the alert level so
-            // the low-stock states on the dashboard have something to show.
-            'inventory': Math.floor( rand() * 180 ),
+            // New products start empty: stock only ever arrives by confirming a
+            // purchase, and the stock report is derived from those documents,
+            // so a seeded inventory would just disagree with the report.
+            'inventory': 0,
             'displayNumber': n,
             'status': rand() > 0.08
         } );

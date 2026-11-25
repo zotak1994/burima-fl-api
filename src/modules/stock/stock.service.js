@@ -4,6 +4,7 @@ const dayjs = require( '../../utils/day' );
 const { CalmService } = require( '../../../system/core/CalmService' );
 const { CalmError } = require( '../../../system/core/CalmError' );
 const { stockEngine, startOfDay, money } = require( './stock.engine' );
+const { SECTIONS, TOTALS } = require( './excise-form' );
 
 const asId = ( v ) => new mongoose.Types.ObjectId( String( v ) );
 
@@ -569,6 +570,112 @@ class StockService extends CalmService {
         } finally {
             await session.endSession();
         }
+    }
+
+    /**
+     * The excise return, line for line as the government form lays it out: one
+     * row per form code (IF-01, OI-06, …) inside its section, the three section
+     * totals (TFL, TBR, TIML) and a grand total. Every figure is in LITRES.
+     *
+     * A product's bottles become litres through its measurement's volume — a
+     * 750 ML bottle is 0.75 L — so opening, receipts and sales are summed as
+     * (bottles × volumeMl ÷ 1000). A form row reads the category it is named
+     * for; the per-product opening and movement come from the same snapshots
+     * the stock report reads, so the two reports always agree.
+     * @param { Object } query - shop, from, to | date
+     * @returns { Promise<Object> } sections, section totals and a grand total
+     */
+    async exciseReport( query ) {
+        if ( !query.shop ) {
+            throw new CalmError(
+                'VALIDATION_ERROR', 'An excise report needs a shop.'
+            );
+        }
+        const { from, to } = readRange( query );
+        const shop = asId( query.shop );
+        const Product = mongoose.model( 'product' );
+
+        // Every product in the shop, with just its category name and its bottle
+        // size (via measurement volume).
+        const products = await Product.find( { 'shop': shop } )
+            .select( 'category capacity' )
+            .populate( 'category', 'name' )
+            .populate( 'capacity', 'volumeMl' )
+            .lean();
+
+        const ids = products.map( ( p ) => String( p._id ) );
+        const [ openings, moved ] = await Promise.all( [
+            this.openingsAt( shop, from, ids ),
+            this.movedIn( shop, from, to, ids )
+        ] );
+
+        // Litres per category name (upper-cased), so a form row can look up the
+        // category it is named for in one step.
+        const perCat = new Map();
+        for ( const p of products ) {
+            const cat = String( ( p.category && p.category.name ) || '' )
+                .trim().toUpperCase();
+            if ( !cat ) continue;
+            const ml = ( p.capacity && Number( p.capacity.volumeMl ) ) || 0;
+            // Without a known bottle volume there is no litreage to add.
+            if ( !ml ) continue;
+            const perL = ml / 1000;
+            const k = String( p._id );
+            const m = moved.get( k ) || {};
+            const a = perCat.get( cat )
+                || { 'opening': 0, 'receipts': 0, 'sales': 0 };
+            a.opening += ( openings.get( k ) || 0 ) * perL;
+            a.receipts += ( m.inQty || 0 ) * perL;
+            a.sales += ( m.outQty || 0 ) * perL;
+            perCat.set( cat, a );
+        }
+
+        const zero = () => ( { 'opening': 0, 'receipts': 0, 'sales': 0 } );
+        // Running (unrounded) subtotals per total group: FL, BR, IML.
+        const subtotals = { 'FL': zero(), 'BR': zero(), 'IML': zero() };
+        const shape = ( a ) => ( {
+            'opening': money( a.opening ),
+            'receipts': money( a.receipts ),
+            'sales': money( a.sales ),
+            // Closing from the unrounded figures, then rounded once.
+            'closing': money( a.opening + a.receipts - a.sales )
+        } );
+
+        const sections = SECTIONS.map( ( sec ) => {
+            const rows = sec.rows.map( ( [ code, label, category ] ) => {
+                const a = ( category && perCat.get( category.toUpperCase() ) )
+                    || zero();
+                const t = subtotals[ sec.total ];
+                t.opening += a.opening;
+                t.receipts += a.receipts;
+                t.sales += a.sales;
+                // The exact category name is what the row is read as; `label`
+                // is the plain sub-type kept for rows that have no category.
+                return { code, label, 'category': category || null, ...shape( a ) };
+            } );
+            return { 'title': sec.title, rows };
+        } );
+
+        const totals = TOTALS.map( ( t ) => ( {
+            'code': t.code,
+            'label': t.label,
+            ...shape( subtotals[ t.of ] )
+        } ) );
+
+        const grandAcc = zero();
+        for ( const g of Object.values( subtotals ) ) {
+            grandAcc.opening += g.opening;
+            grandAcc.receipts += g.receipts;
+            grandAcc.sales += g.sales;
+        }
+
+        return {
+            from,
+            to,
+            sections,
+            totals,
+            'grand': { 'label': 'Grand Total', ...shape( grandAcc ) }
+        };
     }
 }
 

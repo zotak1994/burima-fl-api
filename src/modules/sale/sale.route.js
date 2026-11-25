@@ -13,6 +13,7 @@ router.use( AuthController.checkLogin );
 router.get( '/', SaleController.getAll );
 // Named routes before '/:id' so none is ever read as an id.
 router.get( '/report', SaleController.report );
+router.get( '/summary', SaleController.summary );
 router.put( '/:id/confirm', SaleController.confirm );
 router.put( '/:id/unconfirm', SaleController.unconfirm );
 router.get( '/:id', SaleController.get );

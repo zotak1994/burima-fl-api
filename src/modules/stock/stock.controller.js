@@ -43,6 +43,23 @@ class StockController extends CalmController {
         }
     }
 
+    /** GET /stock/excise-report — the excise return, by form section, in litres. */
+    async exciseReport( req, res, next ) {
+        try {
+            const result = await this.service.exciseReport( req.query );
+            res.sendCalmResponse( result.sections, {
+                'metaData': {
+                    'from': result.from,
+                    'to': result.to,
+                    'totals': result.totals,
+                    'grand': result.grand
+                }
+            } );
+        } catch ( e ) {
+            next( e );
+        }
+    }
+
     /** GET /stock/totals — the window in one row. */
     async totals( req, res, next ) {
         try {
