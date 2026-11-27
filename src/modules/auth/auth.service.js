@@ -58,9 +58,20 @@ class AuthService {
         }
     }
 
+    /**
+     * Self-registration, which takes no token. The new account is pinned to an
+     * unprivileged `user` with no shop or module access, whatever the body
+     * asked for — see RegisterRequestDTO. Access is granted by an admin from
+     * the Users screen, never by the caller.
+     */
     async register( data ) {
         try {
-            const userData = await this.userService.insert( data );
+            const userData = await this.userService.insert( {
+                ...data,
+                'role': 'user',
+                'shops': [],
+                'permissions': []
+            } );
             return { 'data': userData.data };
         } catch ( error ) {
             throw error;

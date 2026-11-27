@@ -17,12 +17,20 @@ class LoginResponseDTO {
     }
 }
 
+/**
+ * Public self-registration.
+ *
+ * `role`, `shops` and `permissions` are deliberately NOT read from the body.
+ * This endpoint needs no token, so honouring a role here would let anyone
+ * create themselves an administrator and walk straight past every other check
+ * in the API. The service pins the new account to an unprivileged `user` with
+ * no grants; an admin hands out access from the Users screen afterwards.
+ */
 class RegisterRequestDTO {
     constructor( { ...props } ) {
         this.email = props.email ? props.email.toLowerCase() : undefined;
         this.name = props.name;
         this.password = props.password;
-        this.role = props.role;
 
         // Delete Fields which are not present in data
         Object.keys( this ).forEach( key => {

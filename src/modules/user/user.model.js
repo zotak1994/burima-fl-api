@@ -3,6 +3,7 @@ const mongoose = require( 'mongoose' );
 const { Schema } = require( 'mongoose' );
 const uniqueValidator = require( 'mongoose-unique-validator' );
 const bcrypt = require( 'bcrypt' );
+const { PERMISSIONS: ACCESS_PERMISSIONS } = require( '../../utils/access' );
 const SALT_WORK_FACTOR = 10;
 
 class User {
@@ -40,6 +41,19 @@ class User {
                 'required': true,
                 'default': 'user'
             },
+            // Which outlets a non-admin may work in. An admin is not scoped:
+            // the list is left empty on that role and ignored when reading.
+            'shops': [ {
+                'type': Schema.Types.ObjectId,
+                'ref': 'shop'
+            } ],
+            // Which modules a non-admin may open. Empty means the account can
+            // reach nothing until an admin grants something, which is the
+            // safe default for a freshly created login.
+            'permissions': [ {
+                'type': String,
+                'enum': ACCESS_PERMISSIONS
+            } ],
             // Which enquiries a non-admin user may see/create:
             //   retail    -> customerType 'customer' only
             //   wholesale -> customerType 'wholesaler' only

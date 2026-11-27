@@ -1,20 +1,22 @@
 'use strict';
 const MotherCategoryController = require( './mothercategory.controller' );
 const AuthController = require( '../auth/auth.controller' );
+const { requireAdmin } = require( '../../utils/access' );
 const express = require( 'express' );
 const router = express.Router();
 
 /**
  * Reads are public (the storefront catalogue needs them).
- * Writes require a valid admin JWT (Authorization: Bearer <token>).
+ * Writes are admin-only: these lookups are shared by every outlet, so a
+ * change here changes what all the other shops see.
  */
 router.get( '/', MotherCategoryController.getAll );
 router.get( '/:id', MotherCategoryController.get );
-router.post( '/', AuthController.checkLogin, MotherCategoryController.insert );
+router.post( '/', AuthController.checkLogin, requireAdmin, MotherCategoryController.insert );
 // NOTE: must be declared before '/:id' so 'reorder' isn't captured as an id.
-router.put( '/reorder', AuthController.checkLogin, MotherCategoryController.reorder );
-router.put( '/:id', AuthController.checkLogin, MotherCategoryController.update );
-router.delete( '/:id', AuthController.checkLogin, MotherCategoryController.delete );
+router.put( '/reorder', AuthController.checkLogin, requireAdmin, MotherCategoryController.reorder );
+router.put( '/:id', AuthController.checkLogin, requireAdmin, MotherCategoryController.update );
+router.delete( '/:id', AuthController.checkLogin, requireAdmin, MotherCategoryController.delete );
 
 
 module.exports = router;

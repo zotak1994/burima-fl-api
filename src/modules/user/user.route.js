@@ -1,15 +1,20 @@
 'use strict';
 const UserController = require( './user.controller' );
 const AuthController = require( '../auth/auth.controller' );
+const { requireAdmin } = require( '../../utils/access' );
 const express = require( 'express' );
 const router = express.Router();
 
 /**
- * Admin users CRUD. Every route requires a valid admin JWT
- * (Authorization: Bearer <token>). Passwords are hashed on create
- * and never returned.
+ * Portal accounts CRUD. Every route requires a valid JWT
+ * (Authorization: Bearer <token>) AND the admin role — an account that could
+ * read or edit this list could grant itself anything. Passwords are hashed on
+ * create and never returned.
+ *
+ * A signed-in account reads its own details from /auth/profile, not here.
  */
 router.use( AuthController.checkLogin );
+router.use( requireAdmin );
 
 router.get( '/', UserController.getAll );
 router.get( '/:id', UserController.get );

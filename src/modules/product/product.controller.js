@@ -42,6 +42,25 @@ class ProductController extends CalmController {
     }
 
     /**
+     * POST /products/delete-many
+     * body: { ids: [<productId>, ...] }
+     * Bulk delete. Refused in full if any of them is recorded on a purchase
+     * or a sale, so a part-done delete never leaves the admin guessing.
+     */
+    async deleteMany( req, res, next ) {
+        try {
+            const ids = Array.isArray( req.body ) ? req.body : req.body.ids;
+            const response = await this.service.deleteMany( ids );
+            res.sendCalmResponse( null, {
+                'deleted': true,
+                'metaData': { 'deleted': response.data.deleted }
+            } );
+        } catch ( e ) {
+            next( e );
+        }
+    }
+
+    /**
      * PUT /products/reorder
      * body: { items: [{ id, displayNumber }] } (or a bare array)
      * Persists the admin-arranged product ordering.

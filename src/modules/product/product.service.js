@@ -5,6 +5,7 @@ const {
     CalmService, NAMED_SORTS, NAME_COLLATION, needsNameCollation
 } = require( '../../../system/core/CalmService' );
 const { CalmError } = require( '../../../system/core/CalmError' );
+const { assertProductsNotInUse } = require( '../../utils' );
 
 // Products carry the shared named sorts, except that their "display" order
 // is the catalogue order: category position first, then the product's own
@@ -763,6 +764,45 @@ class ProductService extends CalmService {
         }
 
         return { created, 'failed': errors.length, errors };
+    }
+
+    /**
+     * Delete, unless a purchase or a sale already records this product.
+     * See assertProductsNotInUse: those documents keep its id, and stock is
+     * rebuilt from them.
+     * @param { string } id
+     */
+    async delete( id ) {
+        await assertProductsNotInUse( [ id ] );
+        return super.delete( id );
+    }
+
+    /**
+     * Delete several products at once.
+     *
+     * All or nothing: if any one of them is recorded on a purchase or a sale
+     * the whole request is refused, naming the ones at fault. Deleting the
+     * rest and reporting a partial success would leave the admin guessing
+     * which of their ticked rows survived.
+     *
+     * @param { Array } ids
+     */
+    async deleteMany( ids ) {
+        const wanted = [ ...new Set(
+            ( Array.isArray( ids ) ? ids : [] )
+                .map( ( id ) => String( id || '' ) )
+                .filter( ( id ) => mongoose.Types.ObjectId.isValid( id ) )
+        ) ];
+        if ( !wanted.length ) {
+            throw new CalmError( 'VALIDATION_ERROR', 'Select at least one product to delete.' );
+        }
+
+        await assertProductsNotInUse( wanted );
+
+        const result = await this.model.deleteMany( {
+            '_id': { '$in': wanted.map( ( id ) => new mongoose.Types.ObjectId( id ) ) }
+        } );
+        return { 'data': { 'deleted': result.deletedCount }, 'deleted': true };
     }
 }
 

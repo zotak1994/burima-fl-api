@@ -70,7 +70,6 @@ const SECTIONS = [
 const TOTALS = [
     { 'code': 'TFL', 'label': 'Total : Foreign Liquor', 'of': 'FL' },
     { 'code': 'TBR', 'label': 'Total : Beer', 'of': 'BR' },
-    { 'code': 'TIML', 'label': 'Total : India Made Liquor', 'of': 'IML' }
 ];
 
 module.exports = { SECTIONS, TOTALS };
