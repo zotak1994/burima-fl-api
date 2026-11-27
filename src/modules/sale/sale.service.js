@@ -7,7 +7,7 @@ const {
     stockEngine, startOfDay, endOfDayExclusive, money: round2
 } = require( '../stock/stock.engine' );
 const {
-    money, clientFigure, normaliseLines, assertNotFutureDate
+    money, clientFigure, normaliseLines, assertNotFutureDate, listFilters
 } = require( '../stock/stock-lines' );
 
 const asId = ( v ) => new mongoose.Types.ObjectId( String( v ) );
@@ -59,6 +59,9 @@ class SaleService extends CalmService {
      * Newest first by default: a sales screen is about what just went out.
      */
     async getAll( query, ops = {} ) {
+        // ?from=&to= (inclusive days) and ?createdBy= — see listFilters.
+        // eslint-disable-next-line no-param-reassign
+        query = listFilters( query );
         if ( !query.sortBy && !query.sort ) {
             // eslint-disable-next-line no-param-reassign
             query = { ...query, sortBy: { 'date': -1, 'createdAt': -1 } };

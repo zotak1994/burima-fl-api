@@ -5,7 +5,7 @@ const { CalmService } = require( '../../../system/core/CalmService' );
 const { CalmError } = require( '../../../system/core/CalmError' );
 const { stockEngine } = require( '../stock/stock.engine' );
 const {
-    money, clientFigure, normaliseLines, assertNotFutureDate
+    money, clientFigure, normaliseLines, assertNotFutureDate, listFilters
 } = require( '../stock/stock-lines' );
 
 /**
@@ -109,6 +109,9 @@ class PurchaseService extends CalmService {
      * not about a manually arranged order.
      */
     async getAll( query, ops = {} ) {
+        // ?from=&to= (inclusive days) and ?createdBy= — see listFilters.
+        // eslint-disable-next-line no-param-reassign
+        query = listFilters( query );
         if ( !query.sortBy && !query.sort ) {
             // eslint-disable-next-line no-param-reassign
             query = { ...query, sortBy: { 'date': -1, 'createdAt': -1 } };

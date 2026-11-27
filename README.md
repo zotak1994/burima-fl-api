@@ -113,6 +113,11 @@ Then edit `src/modules/order/order.model.js` (schema), `order.dto.js` (exposed f
   forced to `createdBy = <the token's user>`, and someone else's document
   reads as a 404 rather than a 403, so whether it exists stays private.
 
+  The purchase and sale lists also take `?from=YYYY-MM-DD&to=YYYY-MM-DD`
+  (inclusive days, either end optional) and `?createdBy=<userId>`. The date
+  range applies to everyone; `createdBy` is an admin's filter — for a `user`
+  it is overwritten with their own id, as above.
+
   For a `user`, **confirming is the point of no return.** An entry is created
   as a draft (`status` is not settable on insert), is freely editable and
   deletable while it is one, and becomes read-only the moment it is confirmed:

@@ -172,4 +172,51 @@ function assertNotFutureDate( value, label = 'purchase' ) {
     }
 }
 
-module.exports = { money, clientFigure, normaliseLines, assertNotFutureDate };
+/**
+ * Turn a listing's friendly filters into Mongo ones, for purchases and sales.
+ *
+ *  - `from` / `to` are inclusive calendar days ('YYYY-MM-DD'), either may
+ *    be left out. They become a range on the document's own `date`, using
+ *    the same UTC day the stock engine posts against, so the list and the
+ *    stock report agree about which day an entry belongs to.
+ *  - `createdBy` is checked to be an id, so a bad one is a 422 rather than a
+ *    cast error. For a staff account the access layer has already replaced
+ *    it with their own id; this is the admin's "entered by" filter.
+ *
+ * Runs after the sanitizer, so the `$gte` it adds is ours, not the client's.
+ * @param { Object } query - the listing query, untouched
+ * @returns { Object } a copy, ready for CalmService.getAll
+ */
+function listFilters( query ) {
+    const { from, to, ...rest } = query;
+    const day = ( value, label ) => {
+        const when = dayjs.utc( value );
+        if ( !when.isValid() ) {
+            throw new CalmError( 'VALIDATION_ERROR', `The ${ label } date is not a date.` );
+        }
+        return when.startOf( 'day' );
+    };
+    if ( from || to ) {
+        const range = {};
+        const start = from ? day( from, 'from' ) : null;
+        const end = to ? day( to, 'to' ) : null;
+        if ( start && end && end.isBefore( start ) ) {
+            throw new CalmError( 'VALIDATION_ERROR', 'The date range ends before it starts.' );
+        }
+        if ( start ) {
+            range.$gte = start.toDate();
+        }
+        if ( end ) {
+            range.$lt = end.add( 1, 'day' ).toDate();
+        }
+        rest.date = range;
+    }
+    if ( rest.createdBy !== undefined && !mongoose.isValidObjectId( String( rest.createdBy ) ) ) {
+        throw new CalmError( 'VALIDATION_ERROR', 'Pick a valid user to filter by.' );
+    }
+    return rest;
+}
+
+module.exports = {
+    money, clientFigure, normaliseLines, assertNotFutureDate, listFilters
+};
